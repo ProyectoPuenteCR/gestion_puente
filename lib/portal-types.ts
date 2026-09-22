@@ -19,6 +19,7 @@ export type CodeOfConductAcceptance = {
   revision: string;
   driveModifiedTime: string;
   acceptedAt: string;
+  acceptanceYear: number;
   acceptsCode: boolean;
   acceptsImages: boolean;
   acceptsFee: boolean;

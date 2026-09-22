@@ -32,13 +32,15 @@ type CodePayload = {
     revision: string;
     documentDate: string;
     modifiedTime: string;
-    previewUrl: string;
+    html: string;
     viewUrl: string;
   };
   acceptance: CodeOfConductAcceptance | null;
   previousAcceptance: CodeOfConductAcceptance | null;
   canSign: boolean;
   admin: {
+    selectedYear: number;
+    years: number[];
     summary: { total: number; accepted: number; pending: number; outdated: number };
     users: CodeOfConductUserStatus[];
   } | null;
@@ -71,12 +73,13 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
   const [acceptsImages, setAcceptsImages] = useState<boolean | null>(null);
   const [acceptsFee, setAcceptsFee] = useState<boolean | null>(null);
   const [feeReason, setFeeReason] = useState("");
+  const [adminYear, setAdminYear] = useState(new Date().getFullYear());
 
-  async function load() {
+  async function load(year = adminYear) {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/codigo-convivencia", { cache: "no-store" });
+      const response = await fetch("/api/codigo-convivencia?year=" + encodeURIComponent(String(year)), { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "No se pudo cargar el Código de Convivencia.");
       setData(payload as CodePayload);
@@ -88,8 +91,8 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
   }
 
   useEffect(() => {
-    void load();
-  }, []);
+    void load(adminYear);
+  }, [adminYear]);
 
   const documentVersion = useMemo(() => {
     if (!data) return "";
@@ -141,7 +144,7 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
       setAcceptsImages(null);
       setAcceptsFee(null);
       setFeeReason("");
-      await load();
+      await load(adminYear);
       router.refresh();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "No se pudo registrar la aceptación.");
@@ -168,7 +171,7 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
     const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "aceptaciones-codigo-convivencia.csv";
+    link.download = "aceptaciones-codigo-convivencia-" + data.admin.selectedYear + ".csv";
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -227,12 +230,12 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
         </div>
 
         <div className="bg-slate-100 p-3 md:p-5">
-          <iframe
-            title="Código de Convivencia de Proyecto Puente"
-            src={data.document.previewUrl}
-            className="h-[72vh] min-h-[620px] w-full rounded-xl border border-slate-200 bg-white shadow-sm"
-            loading="lazy"
-          />
+          <article className="mx-auto max-w-5xl rounded-xl border border-slate-200 bg-white px-5 py-8 shadow-sm md:px-10 md:py-10">
+            <div
+              className="text-[15px] leading-7 text-slate-700 [&_h1]:mb-7 [&_h1]:text-center [&_h1]:text-2xl [&_h1]:font-bold [&_h1]:text-slate-950 [&_h2]:mb-3 [&_h2]:mt-7 [&_h2]:text-lg [&_h2]:font-bold [&_h2]:text-slate-950 [&_li]:mb-1.5 [&_p]:mb-3 [&_strong]:font-semibold [&_ul]:mb-4 [&_ul]:ml-6 [&_ul]:list-disc"
+              dangerouslySetInnerHTML={{ __html: data.document.html }}
+            />
+          </article>
         </div>
       </section>
 
@@ -248,6 +251,7 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
                   <p><span className="font-semibold">Integrante:</span> {data.acceptance.name}</p>
                   <p><span className="font-semibold">DNI / firma:</span> {data.acceptance.dni}</p>
                   <p><span className="font-semibold">Fecha:</span> {formatDateTime(data.acceptance.acceptedAt)}</p>
+                  <p><span className="font-semibold">Año de aceptación:</span> {data.acceptance.acceptanceYear}</p>
                   <p><span className="font-semibold">Versión:</span> REV {data.acceptance.revision}</p>
                   <p><span className="font-semibold">Uso de imágenes:</span> {data.acceptance.acceptsImages ? "Sí" : "No"}</p>
                   <p><span className="font-semibold">Cuota societaria:</span> {data.acceptance.acceptsFee ? "Sí" : "No"}</p>
@@ -272,7 +276,11 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
           {data.previousAcceptance ? (
             <div className="mb-5 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
               <AlertTriangle className="h-5 w-5 shrink-0" />
-              <p>Existe una aceptación anterior del {formatDateTime(data.previousAcceptance.acceptedAt)}, pero el documento fue actualizado. Debés aceptar la versión vigente.</p>
+              <p>
+                {data.previousAcceptance.acceptanceYear < new Date().getFullYear()
+                  ? "Tu última aceptación corresponde al año " + data.previousAcceptance.acceptanceYear + ". La aceptación se renueva cada enero, por lo que debés firmar nuevamente para " + new Date().getFullYear() + "."
+                  : "Existe una aceptación anterior del " + formatDateTime(data.previousAcceptance.acceptedAt) + ", pero el documento fue actualizado. Debés aceptar la versión vigente."}
+              </p>
             </div>
           ) : null}
 
@@ -346,9 +354,22 @@ export function CodeOfConductView({ user, locked }: { user: PortalUser; locked: 
               <p className="eyebrow">CONTROL ADMINISTRATIVO</p>
               <h2 className="text-xl font-bold text-slate-950">Estado de aceptaciones</h2>
             </div>
-            <Button variant="outline" onClick={downloadCsv}><Download className="h-4 w-4" /> Exportar CSV</Button>
+<div className="flex flex-wrap items-end gap-2">
+              <label className="grid gap-1 text-sm font-medium text-slate-700">
+                <span>Año</span>
+                <select
+                  value={data.admin.selectedYear}
+                  onChange={(event) => setAdminYear(Number(event.target.value))}
+                  className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-sm"
+                >
+                  {data.admin.years.map((year) => <option key={year} value={year}>{year}</option>)}
+                </select>
+              </label>
+              <Button variant="outline" onClick={downloadCsv}><Download className="h-4 w-4" /> Exportar CSV</Button>
+            </div>
           </div>
 
+          <div className="border-b border-slate-100 px-5 py-3 text-sm text-slate-600">Estado correspondiente al año <strong>{data.admin.selectedYear}</strong>.</div>
           <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl border border-slate-200 p-4"><p className="text-xs font-semibold uppercase text-slate-500">Usuarios</p><strong className="mt-1 block text-2xl text-slate-950">{data.admin.summary.total}</strong></div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-semibold uppercase text-emerald-700">Aceptaron</p><strong className="mt-1 block text-2xl text-emerald-950">{data.admin.summary.accepted}</strong></div>

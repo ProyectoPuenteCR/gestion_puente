@@ -1,5 +1,7 @@
 import "server-only";
 
+import { inflateRawSync } from "node:zlib";
+
 import type {
   Asistencia,
   BirthdayAutomationMember,
@@ -1583,6 +1585,7 @@ const CODE_OF_CONDUCT_SHEET = "Aceptaciones Codigo";
 const CODE_OF_CONDUCT_FILE_ID = process.env.GOOGLE_DRIVE_CONDUCT_CODE_FILE_ID?.trim() || "1MdWwVC43y7fk2SG4Gaw-FiqHNSgFDEGY";
 const CODE_OF_CONDUCT_REVISION = "2026";
 const CODE_OF_CONDUCT_DATE = "08-02-2026";
+const CODE_OF_CONDUCT_START_YEAR = 2026;
 const CODE_OF_CONDUCT_DEFAULT_NAME = "COD CONVIVENCIA 2026 .docx";
 const CODE_OF_CONDUCT_HEADERS = [
   "ID",
@@ -1599,6 +1602,7 @@ const CODE_OF_CONDUCT_HEADERS = [
   "AceptoCuota",
   "MotivoCuotaNo",
   "RequiereFirmaTutor",
+  "AnioAceptacion",
 ] as const;
 
 type CodeOfConductDocument = {
@@ -1607,72 +1611,228 @@ type CodeOfConductDocument = {
   revision: string;
   documentDate: string;
   modifiedTime: string;
-  previewUrl: string;
+  html: string;
   viewUrl: string;
 };
 
+function currentAcceptanceYear() {
+  return new Date().getFullYear();
+}
+
 async function ensureCodeOfConductSheet() {
   let ids = await sheetIds();
-  if (typeof ids[CODE_OF_CONDUCT_SHEET] === "number") return ids[CODE_OF_CONDUCT_SHEET];
-
-  await writeRequests([{
-    addSheet: {
-      properties: {
-        title: CODE_OF_CONDUCT_SHEET,
-        gridProperties: { rowCount: 5000, columnCount: CODE_OF_CONDUCT_HEADERS.length, frozenRowCount: 1 },
+  if (typeof ids[CODE_OF_CONDUCT_SHEET] !== "number") {
+    await writeRequests([{
+      addSheet: {
+        properties: {
+          title: CODE_OF_CONDUCT_SHEET,
+          gridProperties: { rowCount: 5000, columnCount: CODE_OF_CONDUCT_HEADERS.length, frozenRowCount: 1 },
+        },
       },
-    },
-  }]);
-  globalGoogleCache.__proyectoPuenteSheetIds = undefined;
-  ids = await sheetIds();
+    }]);
+    globalGoogleCache.__proyectoPuenteSheetIds = undefined;
+    ids = await sheetIds();
+  }
+
   const sheetId = ids[CODE_OF_CONDUCT_SHEET];
   if (typeof sheetId !== "number") throw new Error("No se pudo crear la hoja de aceptaciones del Código de Convivencia.");
 
-  await writeRequests([{
-    updateCells: {
-      range: {
-        sheetId,
-        startRowIndex: 0,
-        endRowIndex: 1,
-        startColumnIndex: 0,
-        endColumnIndex: CODE_OF_CONDUCT_HEADERS.length,
+  await writeRequests([
+    {
+      updateSheetProperties: {
+        properties: { sheetId, gridProperties: { columnCount: CODE_OF_CONDUCT_HEADERS.length } },
+        fields: "gridProperties.columnCount",
       },
-      rows: [{ values: CODE_OF_CONDUCT_HEADERS.map((value) => cellData(value)) }],
-      fields: "userEnteredValue",
     },
-  }]);
+    {
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: CODE_OF_CONDUCT_HEADERS.length,
+        },
+        rows: [{ values: CODE_OF_CONDUCT_HEADERS.map((value) => cellData(value)) }],
+        fields: "userEnteredValue",
+      },
+    },
+  ]);
   return sheetId;
 }
 
-async function readCodeOfConductDocument(): Promise<CodeOfConductDocument> {
-  let name = CODE_OF_CONDUCT_DEFAULT_NAME;
-  let modifiedTime = "";
-  let viewUrl = "https://drive.google.com/file/d/" + CODE_OF_CONDUCT_FILE_ID + "/view";
-  try {
-    const token = await getGoogleAccessToken();
-    const fields = encodeURIComponent("id,name,mimeType,modifiedTime,webViewLink");
-    const response = await fetch(
-      "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(CODE_OF_CONDUCT_FILE_ID) + "?fields=" + fields + "&supportsAllDrives=true",
+function zipEntry(bytes: Uint8Array, wantedName: string) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const minOffset = Math.max(0, bytes.byteLength - 65_557);
+  let eocd = -1;
+  for (let offset = bytes.byteLength - 22; offset >= minOffset; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("El archivo Word no contiene un ZIP válido.");
+
+  const entries = view.getUint16(eocd + 10, true);
+  let cursor = view.getUint32(eocd + 16, true);
+  const decoder = new TextDecoder();
+
+  for (let index = 0; index < entries; index += 1) {
+    if (view.getUint32(cursor, true) !== 0x02014b50) break;
+    const compression = view.getUint16(cursor + 10, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const nameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+    const localOffset = view.getUint32(cursor + 42, true);
+    const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+
+    if (name === wantedName) {
+      if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error("El documento Word está dañado.");
+      const localNameLength = view.getUint16(localOffset + 26, true);
+      const localExtraLength = view.getUint16(localOffset + 28, true);
+      const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+      const compressed = bytes.subarray(dataOffset, dataOffset + compressedSize);
+      if (compression === 0) return compressed;
+      if (compression === 8) return new Uint8Array(inflateRawSync(compressed));
+      throw new Error("El documento Word usa una compresión no compatible.");
+    }
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error("No se encontró el contenido principal dentro del archivo Word.");
+}
+
+function xmlText(value: string) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function htmlText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function paragraphRunHtml(paragraphXml: string) {
+  const runs = [...paragraphXml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)];
+  if (!runs.length) {
+    return [...paragraphXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)]
+      .map((match) => htmlText(xmlText(match[1] ?? "")))
+      .join("");
+  }
+  return runs.map((match) => {
+    const run = match[0];
+    let text = "";
+    const tokens = run.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<w:tab\b[^>]*\/>|<w:br\b[^>]*\/>/g);
+    for (const token of tokens) {
+      if (token[1] !== undefined) text += htmlText(xmlText(token[1]));
+      else if (token[0].startsWith("<w:tab")) text += "&emsp;";
+      else text += "<br />";
+    }
+    if (!text) return "";
+    if (/<w:u\b/.test(run)) text = "<u>" + text + "</u>";
+    if (/<w:i\b/.test(run)) text = "<em>" + text + "</em>";
+    if (/<w:b\b/.test(run)) text = "<strong>" + text + "</strong>";
+    return text;
+  }).join("");
+}
+
+function paragraphPlainText(paragraphXml: string) {
+  return [...paragraphXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)]
+    .map((match) => xmlText(match[1] ?? ""))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function docxToHtml(bytes: Uint8Array) {
+  const xml = new TextDecoder("utf-8").decode(zipEntry(bytes, "word/document.xml"));
+  const paragraphs = [...xml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].map((match) => match[0]);
+  const output: string[] = [];
+  let listOpen = false;
+
+  const closeList = () => {
+    if (listOpen) {
+      output.push("</ul>");
+      listOpen = false;
+    }
+  };
+
+  for (const paragraph of paragraphs) {
+    const plain = paragraphPlainText(paragraph);
+    if (!plain) continue;
+    const runHtml = paragraphRunHtml(paragraph) || htmlText(plain);
+    const isList = /<w:numPr\b/.test(paragraph);
+
+    if (isList) {
+      if (!listOpen) {
+        output.push("<ul>");
+        listOpen = true;
+      }
+      output.push("<li>" + runHtml + "</li>");
+      continue;
+    }
+
+    closeList();
+    if (/^NORMAS DE CONVIVENCIA Y C[ÓO]DIGO DE CONDUCTA$/i.test(plain)) {
+      output.push("<h1>" + runHtml + "</h1>");
+    } else if (/^\d{1,2}\.\s+/.test(plain)) {
+      output.push("<h2>" + runHtml + "</h2>");
+    } else if (/^Proyecto Puente\s*[–-]\s*Revisi[oó]n/i.test(plain)) {
+      output.push("<p><strong>" + runHtml + "</strong></p>");
+    } else {
+      output.push("<p>" + runHtml + "</p>");
+    }
+  }
+  closeList();
+  return output.join("\n");
+}
+
+async function readCodeOfConductDocument(includeHtml = true): Promise<CodeOfConductDocument> {
+  const token = await getGoogleAccessToken();
+  const fields = encodeURIComponent("id,name,mimeType,modifiedTime,webViewLink");
+  const metadataResponse = await fetch(
+    "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(CODE_OF_CONDUCT_FILE_ID) + "?fields=" + fields + "&supportsAllDrives=true",
+    { headers: { authorization: "Bearer " + token }, cache: "no-store" },
+  );
+  if (!metadataResponse.ok) throw new Error("No se pudo leer el Código de Convivencia desde Google Drive.");
+  const metadata = await metadataResponse.json() as { name?: string; modifiedTime?: string; webViewLink?: string };
+
+  let html = "";
+  if (includeHtml) {
+    const contentResponse = await fetch(
+      "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(CODE_OF_CONDUCT_FILE_ID) + "?alt=media&supportsAllDrives=true",
       { headers: { authorization: "Bearer " + token }, cache: "no-store" },
     );
-    if (response.ok) {
-      const metadata = await response.json() as { name?: string; modifiedTime?: string; webViewLink?: string };
-      name = metadata.name || name;
-      modifiedTime = metadata.modifiedTime || "";
-      viewUrl = metadata.webViewLink || viewUrl;
-    }
-  } catch {
-    // El documento sigue disponible por su enlace público aunque falle la consulta de metadatos.
+    if (!contentResponse.ok) throw new Error("No se pudo descargar el contenido vigente del Código de Convivencia.");
+    html = docxToHtml(new Uint8Array(await contentResponse.arrayBuffer()));
+    if (!html.trim()) throw new Error("El Código de Convivencia no contiene texto legible.");
   }
+
   return {
     fileId: CODE_OF_CONDUCT_FILE_ID,
-    name,
+    name: metadata.name || CODE_OF_CONDUCT_DEFAULT_NAME,
     revision: CODE_OF_CONDUCT_REVISION,
     documentDate: CODE_OF_CONDUCT_DATE,
-    modifiedTime,
-    previewUrl: "https://drive.google.com/file/d/" + CODE_OF_CONDUCT_FILE_ID + "/preview",
-    viewUrl,
+    modifiedTime: metadata.modifiedTime || "",
+    html,
+    viewUrl: metadata.webViewLink || "https://drive.google.com/file/d/" + CODE_OF_CONDUCT_FILE_ID + "/view",
   };
+}
+
+function acceptanceYearFromRow(row: SheetValue[]) {
+  const explicit = Number(row[14]);
+  if (Number.isInteger(explicit) && explicit >= CODE_OF_CONDUCT_START_YEAR && explicit <= 2100) return explicit;
+  const acceptedAt = cellText(row[8]);
+  const inferred = Number(acceptedAt.slice(0, 4));
+  return Number.isInteger(inferred) && inferred >= CODE_OF_CONDUCT_START_YEAR ? inferred : CODE_OF_CONDUCT_START_YEAR;
 }
 
 function parseCodeOfConductAcceptances(rows: SheetRows): CodeOfConductAcceptance[] {
@@ -1693,6 +1853,7 @@ function parseCodeOfConductAcceptances(rows: SheetRows): CodeOfConductAcceptance
       revision: cellText(row[6]) || CODE_OF_CONDUCT_REVISION,
       driveModifiedTime: cellText(row[7]),
       acceptedAt: cellText(row[8]),
+      acceptanceYear: acceptanceYearFromRow(row),
       acceptsCode: parseBoolean(row[9]),
       acceptsImages: parseBoolean(row[10]),
       acceptsFee: parseBoolean(row[11]),
@@ -1704,12 +1865,12 @@ function parseCodeOfConductAcceptances(rows: SheetRows): CodeOfConductAcceptance
 
 async function readCodeOfConductRows() {
   await ensureCodeOfConductSheet();
-  const payload = await readRanges(["'" + CODE_OF_CONDUCT_SHEET + "'!A1:N5000"]);
+  const payload = await readRanges(["'" + CODE_OF_CONDUCT_SHEET + "'!A1:O5000"]);
   return parseCodeOfConductAcceptances(payload.valueRanges?.[0]?.values ?? []);
 }
 
-function isCurrentCodeAcceptance(record: CodeOfConductAcceptance, document: CodeOfConductDocument) {
-  if (!record.acceptsCode) return false;
+function isCurrentCodeAcceptance(record: CodeOfConductAcceptance, document: CodeOfConductDocument, year = currentAcceptanceYear()) {
+  if (!record.acceptsCode || record.acceptanceYear !== year) return false;
   if (document.modifiedTime) return record.driveModifiedTime === document.modifiedTime;
   return record.revision === document.revision;
 }
@@ -1738,32 +1899,54 @@ function platformUsersForCode(state: ManagementState) {
   return [...people.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
-export async function readCodeOfConductSnapshot(viewer: { email: string; role: UserRole }) {
+function acceptanceYears(records: CodeOfConductAcceptance[]) {
+  const currentYear = currentAcceptanceYear();
+  const years = new Set<number>();
+  for (let year = CODE_OF_CONDUCT_START_YEAR; year <= currentYear; year += 1) years.add(year);
+  for (const record of records) years.add(record.acceptanceYear);
+  return [...years].filter((year) => year >= CODE_OF_CONDUCT_START_YEAR && year <= 2100).sort((a, b) => b - a);
+}
+
+export async function readCodeOfConductSnapshot(
+  viewer: { email: string; role: UserRole },
+  requestedYear = currentAcceptanceYear(),
+) {
   const [document, state, records] = await Promise.all([
-    readCodeOfConductDocument(),
+    readCodeOfConductDocument(true),
     managementState(),
     readCodeOfConductRows(),
   ]);
+  const currentYear = currentAcceptanceYear();
+  const selectedYear = Number.isInteger(requestedYear) && requestedYear >= CODE_OF_CONDUCT_START_YEAR && requestedYear <= 2100
+    ? requestedYear
+    : currentYear;
   const viewerEmail = normalizeEmail(viewer.email);
   const ownRecords = records.filter((record) => record.email === viewerEmail);
-  const acceptance = ownRecords.find((record) => isCurrentCodeAcceptance(record, document)) ?? null;
-  const previousAcceptance = ownRecords.find((record) => !isCurrentCodeAcceptance(record, document)) ?? null;
+  const acceptance = ownRecords.find((record) => isCurrentCodeAcceptance(record, document, currentYear)) ?? null;
+  const previousAcceptance = ownRecords.find((record) =>
+    record.acceptanceYear === currentYear && !isCurrentCodeAcceptance(record, document, currentYear),
+  ) ?? ownRecords.find((record) => record.acceptanceYear < currentYear) ?? null;
 
   let admin: {
+    selectedYear: number;
+    years: number[];
     summary: { total: number; accepted: number; pending: number; outdated: number };
     users: CodeOfConductUserStatus[];
   } | null = null;
 
   if (viewer.role === "admin") {
     const users = platformUsersForCode(state).map((person) => {
-      const personRecords = records.filter((record) => record.email === person.email);
-      const current = personRecords.find((record) => isCurrentCodeAcceptance(record, document));
-      const latest = current ?? personRecords[0];
+      const yearRecords = records.filter((record) => record.email === person.email && record.acceptanceYear === selectedYear);
+      const current = selectedYear === currentYear
+        ? yearRecords.find((record) => isCurrentCodeAcceptance(record, document, selectedYear))
+        : yearRecords.find((record) => record.acceptsCode);
+      const latest = current ?? yearRecords[0];
+      const outdated = selectedYear === currentYear && Boolean(latest) && !current;
       return {
         email: person.email,
         name: person.name,
         role: person.role,
-        status: current ? "accepted" : latest ? "outdated" : "pending",
+        status: current ? "accepted" : outdated ? "outdated" : "pending",
         acceptedAt: latest?.acceptedAt ?? "",
         dni: latest?.dni ?? "",
         requiresTutorSignature: latest?.requiresTutorSignature ?? false,
@@ -1772,6 +1955,8 @@ export async function readCodeOfConductSnapshot(viewer: { email: string; role: U
     const accepted = users.filter((item) => item.status === "accepted").length;
     const outdated = users.filter((item) => item.status === "outdated").length;
     admin = {
+      selectedYear,
+      years: acceptanceYears(records),
       summary: { total: users.length, accepted, outdated, pending: users.length - accepted - outdated },
       users,
     };
@@ -1781,8 +1966,14 @@ export async function readCodeOfConductSnapshot(viewer: { email: string; role: U
 }
 
 export async function hasAcceptedCurrentCode(email: string) {
-  const snapshot = await readCodeOfConductSnapshot({ email, role: "usuario" });
-  return Boolean(snapshot.acceptance);
+  const [document, records] = await Promise.all([
+    readCodeOfConductDocument(false),
+    readCodeOfConductRows(),
+  ]);
+  const normalizedEmail = normalizeEmail(email);
+  return records.some((record) =>
+    record.email === normalizedEmail && isCurrentCodeAcceptance(record, document, currentAcceptanceYear()),
+  );
 }
 
 export async function acceptCodeOfConduct(
@@ -1805,7 +1996,7 @@ export async function acceptCodeOfConduct(
   if (!input.acceptsFee && !feeReason) throw new Error("Si no aceptás la cuota, explicá la causa para que sea evaluada por la Comisión.");
 
   const [document, state, records, acceptanceSheetId] = await Promise.all([
-    readCodeOfConductDocument(),
+    readCodeOfConductDocument(false),
     managementState(),
     readCodeOfConductRows(),
     ensureCodeOfConductSheet(),
@@ -1818,7 +2009,10 @@ export async function acceptCodeOfConduct(
   const storedDni = member ? String(member.values["DNI"] ?? "").replace(/\D/g, "") : "";
   if (storedDni && storedDni !== dni) throw new Error("El DNI ingresado no coincide con el DNI registrado en tu ficha.");
 
-  const existing = records.find((record) => record.email === email && isCurrentCodeAcceptance(record, document));
+  const acceptanceYear = currentAcceptanceYear();
+  const existing = records.find((record) =>
+    record.email === email && isCurrentCodeAcceptance(record, document, acceptanceYear),
+  );
   if (existing) return existing;
 
   const requiresTutorSignature = Boolean(member && member.age !== null && member.age < 18);
@@ -1834,6 +2028,7 @@ export async function acceptCodeOfConduct(
     revision: document.revision,
     driveModifiedTime: document.modifiedTime,
     acceptedAt,
+    acceptanceYear,
     acceptsCode: true,
     acceptsImages: input.acceptsImages,
     acceptsFee: input.acceptsFee,
@@ -1860,7 +2055,8 @@ export async function acceptCodeOfConduct(
           record.acceptsFee,
           record.feeReason,
           record.requiresTutorSignature,
-        ].map((value) => cellData(value)),
+          record.acceptanceYear,
+        ].map((value, index) => cellData(value, index === 14)),
       }],
       fields: "userEnteredValue",
     },
@@ -1887,7 +2083,15 @@ export async function acceptCodeOfConduct(
     requests.push({
       appendCells: {
         sheetId: ids.LOG,
-        rows: [logRow(actor, "CODIGO_CONVIVENCIA_ACEPTADO", email, name, "Código de Convivencia REV " + document.revision, "", "Aceptado")],
+        rows: [logRow(
+          actor,
+          "CODIGO_CONVIVENCIA_ACEPTADO",
+          email,
+          name,
+          "Código de Convivencia " + acceptanceYear + " · REV " + document.revision,
+          "",
+          "Aceptado",
+        )],
         fields: "userEnteredValue",
       },
     });

@@ -3,10 +3,12 @@ import { apiError, currentPortalAccess } from "@/lib/server-access";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const access = await currentPortalAccess();
-    const snapshot = await readCodeOfConductSnapshot(access);
+    const rawYear = Number(new URL(request.url).searchParams.get("year"));
+    const year = Number.isInteger(rawYear) ? rawYear : new Date().getFullYear();
+    const snapshot = await readCodeOfConductSnapshot(access, year);
     return Response.json(snapshot, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return apiError(error);
