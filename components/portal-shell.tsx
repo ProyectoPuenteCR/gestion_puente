@@ -379,7 +379,7 @@ export function PortalShell({
   const availableNavigation = useMemo(
     () => {
       if (isAdmin) return navigation;
-      if (isTrainer) return navigation.filter((item) => item.id === "cumpleanios" || item.id === "habilidades");
+      if (isTrainer) return navigation.filter((item) => item.id === "cumpleanios" || item.id === "habilidades" || item.id === "desempenos");
       const allowed = new Set<string>(data.userScreens);
       return navigation.filter((item) => allowed.has(item.id));
     },
@@ -405,7 +405,7 @@ export function PortalShell({
     window.setTimeout(() => setRefreshing(false), 650);
   }
 
-  const title = availableNavigation.find((item) => item.id === view)?.label ?? "Inicio";
+  const title = view === "desempenos" && !isAdmin ? "Mi desempeño" : availableNavigation.find((item) => item.id === view)?.label ?? "Inicio";
 
   return (
     <SidebarProvider>
@@ -421,10 +421,11 @@ export function PortalShell({
               <SidebarMenu>
                 {availableNavigation.map((item) => {
                   const Icon = item.icon;
+                  const label = item.id === "desempenos" && !isAdmin ? "Mi desempeño" : item.label;
                   return (
                     <SidebarMenuItem key={item.id}>
-                      <SidebarMenuButton isActive={view === item.id} onClick={() => setView(item.id)} tooltip={item.label}>
-                        <Icon /><span>{item.label}</span>
+                      <SidebarMenuButton isActive={view === item.id} onClick={() => setView(item.id)} tooltip={label}>
+                        <Icon /><span>{label}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   );
@@ -469,7 +470,7 @@ export function PortalShell({
           {view === "cumpleanios" ? <BirthdaysView items={data.cumpleanios} showPrivateDetails={isAdmin} /> : null}
           {view === "cuota" ? <SocialFeeManager /> : null}
           {view === "habilidades" && canEditScoring ? <ScoringMatrix data={data} /> : null}
-          {view === "desempenos" && isAdmin ? <PerformanceView data={data} /> : null}
+          {view === "desempenos" ? <PerformanceView key={`${user.email}:${user.role}`} data={data} user={user} /> : null}
           {view === "reportes" ? <StatisticsView data={data} integrantes={filteredMembers} /> : null}
           {view === "configuracion" && isAdmin ? <ConfigurationManager /> : null}
           {view === "administracion" && isAdmin ? <UserAdminManager /> : null}

@@ -121,7 +121,7 @@ function withSharedBirthdayCalendar(scoped: PortalData, source: PortalData): Por
   }));
   return {
     ...scoped,
-    userScreens: [...new Set([...scoped.userScreens, "cumpleanios" as const])],
+    userScreens: [...new Set([...scoped.userScreens, "cumpleanios" as const, "desempenos" as const])],
     cumpleanios,
     resumen: {
       ...scoped.resumen,
@@ -147,34 +147,43 @@ export async function getPortalData(): Promise<PortalData> {
 
 export function scopePortalData(data: PortalData, viewer: { email: string; role: UserRole }): PortalData {
   if (viewer.role === "admin") return data;
+  const email = viewer.email.trim().toLowerCase();
+  const ownMembers = data.integrantes.filter((item) => item.email?.trim().toLowerCase() === email);
+  // Asistencias sólo guarda nombres; evitamos atribuir registros si el nombre no es único.
+  const nameCounts = new Map<string, number>();
+  for (const member of data.integrantes) {
+    const name = normalize(member.nombre).trim();
+    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+  const uniqueNames = new Set(ownMembers.map((item) => normalize(item.nombre).trim()).filter((name) => nameCounts.get(name) === 1));
+  const ownAttendance = data.asistencias.filter((item) => uniqueNames.has(normalize(item.nombre).trim()));
+  const ownFees = data.cuotas.filter((item) => {
+    const recordEmail = item.email?.trim().toLowerCase();
+    return recordEmail ? recordEmail === email : uniqueNames.has(normalize(item.name).trim());
+  });
   if (viewer.role === "capacitador") {
     const scoped = buildPortalData({
       source: data.source,
       connectionError: data.connectionError,
       userScreens: [],
       integrantes: data.integrantes.map((item) => ({ ...item, anioIngreso: "—", fechaNacimiento: null })),
-      asistencias: [],
-      cuotas: [],
+      asistencias: ownAttendance,
+      cuotas: ownFees,
       habilidades: { categorias: [], registros: 0, columnas: [], integrantes: [] },
       scoringHistory: data.scoringHistory,
       scoringTopics: data.scoringTopics,
     });
     return withSharedBirthdayCalendar(scoped, data);
   }
-  const email = viewer.email.trim().toLowerCase();
-  const integrantes = data.integrantes.filter((item) => item.email?.trim().toLowerCase() === email);
-  const names = new Set(integrantes.map((item) => normalize(item.nombre)));
-  const asistencias = data.asistencias.filter((item) => names.has(normalize(item.nombre)));
-  const cuotas = data.cuotas.filter((item) => item.email === email || names.has(normalize(item.name)));
   const scoped = buildPortalData({
     source: data.source,
     connectionError: data.connectionError,
     userScreens: data.userScreens,
-    integrantes,
-    asistencias,
-    cuotas,
+    integrantes: ownMembers,
+    asistencias: ownAttendance,
+    cuotas: ownFees,
     habilidades: { categorias: [], registros: 0, columnas: [], integrantes: [] },
-    scoringHistory: [],
+    scoringHistory: data.scoringHistory.filter((item) => item.email?.trim().toLowerCase() === email),
     scoringTopics: data.scoringTopics,
   });
   return withSharedBirthdayCalendar(scoped, data);

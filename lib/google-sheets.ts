@@ -1083,8 +1083,8 @@ export async function setConfigItemActive(
   const state = await managementState();
   const item = state.config.find((entry) => entry.rowNumber === rowNumber);
   if (!item) throw new Error("La opción ya no existe.");
-  if (item.type === "PANTALLA" && item.value === "cumpleanios" && !active) {
-    throw new Error("Cumpleaños debe permanecer visible para todos los usuarios.");
+  if (item.type === "PANTALLA" && ["cumpleanios", "desempenos"].includes(item.value) && !active) {
+    throw new Error("Cumpleaños y Desempeños deben permanecer visibles para todos los usuarios.");
   }
   if (item.type === "PANTALLA" && !active) {
     const visibleScreens = state.config.filter((entry) => entry.type === "PANTALLA" && entry.active);
@@ -1236,7 +1236,17 @@ export async function readGoogleSheetsData() {
   const scoring = parseScoring(ranges[3]?.values ?? []);
   const scoringHistory = parseScoringHistory(ranges[6]?.values ?? []);
   const cuotas = parseSocialFees(ranges[5]?.values ?? []);
-  const emailByName = new Map(integrantes.flatMap((item) => item.email ? [[normalizeHeader(item.nombre), item.email]] : []));
+  const emailByName = new Map<string, string>();
+  const seenNames = new Set<string>();
+  for (const member of integrantes) {
+    const name = normalizeHeader(member.nombre);
+    if (seenNames.has(name)) {
+      emailByName.delete(name);
+    } else if (member.email) {
+      emailByName.set(name, member.email);
+    }
+    seenNames.add(name);
+  }
   const normalizedCuotas = cuotas.map((item) => ({
     ...item,
     email: item.email || emailByName.get(normalizeHeader(item.name)) || "",

@@ -34,7 +34,7 @@ export type ConfigCategory =
   | "CUMPLEANOS_ASUNTO"
   | "CUMPLEANOS_MENSAJE";
 
-export type UserScreen = "inicio" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "reportes";
+export type UserScreen = "inicio" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "desempenos" | "reportes";
 
 export type ConfigItem = {
   rowNumber: number;

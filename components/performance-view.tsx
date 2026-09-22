@@ -5,7 +5,7 @@ import { Activity, CircleDollarSign, ClipboardList, FileDown, LoaderCircle, Mess
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { PerformanceComment, PortalData } from "@/lib/portal-types";
+import type { PerformanceComment, PortalData, PortalUser } from "@/lib/portal-types";
 
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
@@ -33,20 +33,24 @@ function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }
 
-export function PerformanceView({ data }: { data: PortalData }) {
+export function PerformanceView({ data, user }: { data: PortalData; user: PortalUser }) {
+  const isAdmin = user.role === "admin";
   const members = useMemo(
-    () => data.integrantes.filter((item) => item.email).sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
-    [data.integrantes],
+    () => data.integrantes
+      .filter((item) => item.email && (isAdmin || item.email.trim().toLowerCase() === user.email.trim().toLowerCase()))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
+    [data.integrantes, isAdmin, user.email],
   );
-  const [email, setEmail] = useState(members[0]?.email ?? "");
+  const [selectedEmail, setSelectedEmail] = useState(members[0]?.email ?? "");
+  const email = isAdmin ? selectedEmail : members[0]?.email ?? "";
   const years = useMemo(() => [...new Set([
     new Date().getFullYear() + 1,
     new Date().getFullYear(),
     new Date().getFullYear() - 1,
     ...data.asistencias.flatMap((item) => item.fecha ? [Number(item.fecha.slice(0, 4))] : []),
     ...data.cuotas.map((item) => item.year),
-    ...data.scoringHistory.map((item) => item.year),
-  ])].filter((item) => Number.isInteger(item)).sort((a, b) => b - a), [data.asistencias, data.cuotas, data.scoringHistory]);
+    ...data.scoringHistory.flatMap((item) => isAdmin || item.email === email ? [item.year] : []),
+  ])].filter((item) => Number.isInteger(item)).sort((a, b) => b - a), [data.asistencias, data.cuotas, data.scoringHistory, email, isAdmin]);
   const [year, setYear] = useState(new Date().getFullYear());
   const [comments, setComments] = useState<PerformanceComment[]>([]);
   const [comment, setComment] = useState("");
@@ -66,7 +70,7 @@ export function PerformanceView({ data }: { data: PortalData }) {
 
   const socialFee = useMemo(() => {
     if (!member) return { paid: 0, debt: 0, computable: 0, rate: 0, months: MONTHS.map((name, index) => ({ name, month: index + 1, status: "" })) };
-    const rows = data.cuotas.filter((item) => item.year === year && (item.email === member.email || normalize(item.name) === normalize(member.nombre)));
+    const rows = data.cuotas.filter((item) => item.year === year && item.email === member.email);
     const paid = rows.filter((item) => item.status === "P").length;
     const debt = rows.filter((item) => item.status === "Debe").length;
     const computable = paid + debt;
@@ -78,7 +82,7 @@ export function PerformanceView({ data }: { data: PortalData }) {
   const scoring = useMemo(() => {
     if (!member) return [];
     return data.scoringHistory
-      .filter((item) => item.year === year && ((member.email && item.email === member.email) || normalize(item.name) === normalize(member.nombre)))
+      .filter((item) => item.year === year && item.email === member.email)
       .sort((a, b) => a.month - b.month || a.topic.localeCompare(b.topic, "es") || a.rowNumber - b.rowNumber);
   }, [data.scoringHistory, member, year]);
 
@@ -87,14 +91,14 @@ export function PerformanceView({ data }: { data: PortalData }) {
     return values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1) : "—";
   }, [scoring]);
 
-  const allMemberScores = useMemo(() => data.integrantes.map((item) => {
+  const allMemberScores = useMemo(() => isAdmin ? data.integrantes.map((item) => {
     const history = data.scoringHistory
-      .filter((record) => record.year === year && ((item.email && record.email === item.email) || normalize(record.name) === normalize(item.nombre)))
+      .filter((record) => record.year === year && record.email === item.email)
       .sort((a, b) => a.month - b.month || a.topic.localeCompare(b.topic, "es"));
     const scores = history.flatMap((record) => record.score === null ? [] : [record.score]);
     const result = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
     return { member: item, history, average: result, count: scores.length };
-  }).sort((a, b) => (b.average ?? -1) - (a.average ?? -1) || a.member.nombre.localeCompare(b.member.nombre, "es")), [data.integrantes, data.scoringHistory, year]);
+  }).sort((a, b) => (b.average ?? -1) - (a.average ?? -1) || a.member.nombre.localeCompare(b.member.nombre, "es")) : [], [data.integrantes, data.scoringHistory, isAdmin, year]);
 
   useEffect(() => {
     if (!email) return;
@@ -147,8 +151,8 @@ export function PerformanceView({ data }: { data: PortalData }) {
       const allComments = (body as { comments: PerformanceComment[] }).comments;
       const reportYears = [...new Set([
         ...data.asistencias.flatMap((item) => normalize(item.nombre) === normalize(member.nombre) && item.fecha ? [Number(item.fecha.slice(0, 4))] : []),
-        ...data.cuotas.flatMap((item) => (item.email === member.email || normalize(item.name) === normalize(member.nombre)) ? [item.year] : []),
-        ...data.scoringHistory.flatMap((item) => ((member.email && item.email === member.email) || normalize(item.name) === normalize(member.nombre)) ? [item.year] : []),
+        ...data.cuotas.flatMap((item) => item.email === member.email ? [item.year] : []),
+        ...data.scoringHistory.flatMap((item) => item.email === member.email ? [item.year] : []),
         ...allComments.map((item) => item.anio),
       ])].filter(Number.isInteger).sort((a, b) => b - a);
       if (!reportYears.length) reportYears.push(new Date().getFullYear());
@@ -157,11 +161,11 @@ export function PerformanceView({ data }: { data: PortalData }) {
         const present = attendanceRows.filter((item) => item.asistio).length;
         const absent = attendanceRows.length - present;
         const rate = attendanceRows.length ? Math.round(present / attendanceRows.length * 100) : 0;
-        const feeRows = data.cuotas.filter((item) => item.year === reportYear && (item.email === member.email || normalize(item.name) === normalize(member.nombre)));
+        const feeRows = data.cuotas.filter((item) => item.year === reportYear && item.email === member.email);
         const paid = feeRows.filter((item) => item.status === "P").length;
         const debt = feeRows.filter((item) => item.status === "Debe").length;
         const feeRate = paid + debt ? Math.round(paid / (paid + debt) * 100) : 0;
-        const scores = data.scoringHistory.filter((item) => item.year === reportYear && ((member.email && item.email === member.email) || normalize(item.name) === normalize(member.nombre))).sort((a, b) => a.month - b.month);
+        const scores = data.scoringHistory.filter((item) => item.year === reportYear && item.email === member.email).sort((a, b) => a.month - b.month);
         const numericScores = scores.flatMap((item) => item.score === null ? [] : [item.score]);
         const average = numericScores.length ? (numericScores.reduce((sum, value) => sum + value, 0) / numericScores.length).toFixed(1) : "—";
         const yearComments = allComments.filter((item) => item.anio === reportYear);
@@ -182,8 +186,8 @@ export function PerformanceView({ data }: { data: PortalData }) {
   return (
     <div className="page-stack performance-page">
       <section className="surface performance-hero">
-        <div><p className="eyebrow">SEGUIMIENTO · SOLO ADMINISTRADORES</p><h2>Desempeños</h2><p>Una vista por integrante con asistencia, faltas, scoring y observaciones de seguimiento.</p></div>
-        <div className="performance-selectors"><label><span>Integrante</span><select value={email} onChange={(event) => { setLoading(true); setError(""); setComments([]); setEmail(event.target.value); }}>{members.map((item) => <option key={item.id} value={item.email}>{item.nombre}</option>)}</select></label><label><span>Año</span><select value={year} onChange={(event) => { setLoading(true); setError(""); setComments([]); setYear(Number(event.target.value)); }}>{years.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><Button disabled={reporting || !member} onClick={() => void createReport()}>{reporting ? <LoaderCircle className="spin" /> : <FileDown />} Reporte del integrante</Button></div>
+        <div><p className="eyebrow">{isAdmin ? "SEGUIMIENTO · ADMINISTRACIÓN" : "SEGUIMIENTO PERSONAL"}</p><h2>{isAdmin ? "Desempeños" : "Mi desempeño"}</h2><p>{isAdmin ? "Una vista por integrante con asistencia, faltas, scoring y observaciones de seguimiento." : "Consultá tus asistencias, cuotas, evaluaciones y comentarios de seguimiento."}</p></div>
+        <div className="performance-selectors">{isAdmin ? <label><span>Integrante</span><select value={email} onChange={(event) => { setLoading(true); setError(""); setComments([]); setSelectedEmail(event.target.value); }}>{members.map((item) => <option key={item.id} value={item.email}>{item.nombre}</option>)}</select></label> : null}<label><span>Año</span><select value={year} onChange={(event) => { setLoading(true); setError(""); setComments([]); setYear(Number(event.target.value)); }}>{years.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><Button disabled={reporting || !member} onClick={() => void createReport()}>{reporting ? <LoaderCircle className="spin" /> : <FileDown />} {isAdmin ? "Reporte del integrante" : "Mi reporte"}</Button></div>
       </section>
 
       {member ? (
@@ -215,8 +219,7 @@ export function PerformanceView({ data }: { data: PortalData }) {
 
             <article className="surface performance-comments">
               <header><MessageSquarePlus /><div><p className="eyebrow">SEGUIMIENTO · {year}</p><h2>Comentarios</h2></div></header>
-              <Textarea maxLength={1500} rows={4} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Escribí una observación sobre el desempeño…" />
-              <div className="performance-comment-actions"><small>{comment.length}/1500</small><Button disabled={saving || !comment.trim()} onClick={() => void saveComment()}>{saving ? <LoaderCircle className="spin" /> : <Save />} Guardar comentario</Button></div>
+              {isAdmin ? <><Textarea maxLength={1500} rows={4} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Escribí una observación sobre el desempeño…" /><div className="performance-comment-actions"><small>{comment.length}/1500</small><Button disabled={saving || !comment.trim()} onClick={() => void saveComment()}>{saving ? <LoaderCircle className="spin" /> : <Save />} Guardar comentario</Button></div></> : null}
               {error ? <p className="inline-error" role="alert">{error}</p> : null}
               <div className="performance-comment-list">
                 {loading ? <p className="manager-loading"><LoaderCircle className="spin" /> Cargando comentarios…</p> : comments.map((item) => <div key={item.id}><span>{item.creadoPor.slice(0, 1).toUpperCase()}</span><div><strong>{item.creadoPor}</strong><small>{dateTime(item.fecha)}</small><p>{item.comentario}</p></div></div>)}
@@ -225,7 +228,7 @@ export function PerformanceView({ data }: { data: PortalData }) {
             </article>
           </section>
 
-          <section className="surface performance-all-scores">
+          {isAdmin ? <section className="surface performance-all-scores">
             <header><div><p className="eyebrow">NOTAS DE TODOS LOS INTEGRANTES · {year}</p><h2>Promedios y temas desarrollados</h2></div><Badge variant="outline">{allMemberScores.length} integrantes actuales</Badge></header>
             <div className="performance-all-scores-wrap">
               <table>
@@ -235,9 +238,9 @@ export function PerformanceView({ data }: { data: PortalData }) {
                 </tbody>
               </table>
             </div>
-          </section>
+          </section> : null}
         </>
-      ) : <section className="surface empty-message">No hay integrantes con email-puente para mostrar.</section>}
+      ) : <section className="surface empty-message">{isAdmin ? "No hay integrantes con email-puente para mostrar." : "Tu cuenta no tiene una ficha de integrante asociada. Contactá a la administración para revisar tu email-puente."}</section>}
     </div>
   );
 }

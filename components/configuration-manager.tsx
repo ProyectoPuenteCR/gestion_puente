@@ -39,6 +39,7 @@ const screenLabels: Record<string, string> = {
   asistencia: "Mi asistencia",
   cumpleanios: "Cumpleaños",
   cuota: "Mis cuotas",
+  desempenos: "Mi desempeño",
   reportes: "Estadísticas",
 };
 
@@ -296,7 +297,7 @@ export function ConfigurationManager() {
               <FeeAmountEditor key={`${feeYear}-${feeItem?.value ?? "new"}`} year={feeYear} initialValue={feeItem?.value ?? ""} onSaved={load} />
             </div>
           ) : category === "PANTALLA" || category === "PERMISO" ? (
-            <p className="config-explainer">{category === "PANTALLA" ? "Activá las pantallas que podrán abrir los usuarios comunes. Cumpleaños permanece siempre visible para todos; Scoring, Desempeños, Configuración y Administración conservan sus permisos especiales." : "Los permisos están desactivados por defecto. Podés autorizar por separado que cada usuario edite únicamente su ficha o informe su propia cuota como pagada. Los controles también se aplican en el servidor."}</p>
+            <p className="config-explainer">{category === "PANTALLA" ? "Activá las pantallas que podrán abrir los usuarios comunes. Cumpleaños y Mi desempeño permanecen visibles para cada usuario; Scoring, Configuración y Administración conservan sus permisos especiales." : "Los permisos están desactivados por defecto. Podés autorizar por separado que cada usuario edite únicamente su ficha o informe su propia cuota como pagada. Los controles también se aplican en el servidor."}</p>
           ) : (
             <div className="config-add"><Input value={newValue} onChange={(event) => setNewValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void add(); }} placeholder="Nueva opción…" /><Button disabled={saving || !newValue.trim()} onClick={() => void add()}>{saving ? <LoaderCircle className="spin" /> : <Plus />} Agregar</Button></div>
           )}
@@ -305,7 +306,7 @@ export function ConfigurationManager() {
           {category !== "VALOR_CUOTA" && category !== "CUMPLEANOS_CONFIG" && (loading ? <div className="manager-loading"><LoaderCircle className="spin" /> Cargando…</div> : (
             <div className="config-option-list">
               {current.map((item) => {
-                const alwaysVisible = category === "PANTALLA" && item.value === "cumpleanios";
+                const alwaysVisible = category === "PANTALLA" && (item.value === "cumpleanios" || item.value === "desempenos");
                 const permissionStatus = item.value === memberEditPermission
                   ? (item.active ? "Los usuarios pueden editar únicamente su propia ficha" : "Las fichas están en modo sólo lectura para usuarios")
                   : (item.active ? "Los usuarios pueden informar su propia cuota" : "Sólo administradores pueden cargar pagos");
