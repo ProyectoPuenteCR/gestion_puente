@@ -2,7 +2,7 @@ import { auth, isGoogleAuthConfigured } from "@/auth";
 import { LoginForm } from "@/components/login-form";
 import { PortalShell } from "@/components/portal-shell";
 import { SignOutButton } from "@/components/sign-out-button";
-import { lookupPlatformAccess } from "@/lib/google-sheets";
+import { hasAcceptedCurrentCode, lookupPlatformAccess } from "@/lib/google-sheets";
 import { getPortalData, scopePortalData } from "@/lib/portal-data";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +45,14 @@ export default async function Home({ searchParams }: PageProps) {
       </main>
     );
   }
+  let conductAcceptanceRequired = false;
+  if (access.role !== "admin") {
+    try {
+      conductAcceptanceRequired = !(await hasAcceptedCurrentCode(access.email));
+    } catch {
+      conductAcceptanceRequired = false;
+    }
+  }
   const data = scopePortalData(unscopedData, access);
   return (
     <PortalShell
@@ -56,6 +64,7 @@ export default async function Home({ searchParams }: PageProps) {
         role: access.role,
       }}
       logoutControl={<SignOutButton />}
+      conductAcceptanceRequired={conductAcceptanceRequired}
     />
   );
 }

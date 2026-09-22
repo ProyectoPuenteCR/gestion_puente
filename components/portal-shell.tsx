@@ -15,6 +15,7 @@ import {
   ClipboardPenLine,
   Download,
   FileChartColumn,
+  FileText,
   Home,
   Menu,
   RefreshCw,
@@ -41,6 +42,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfigurationManager } from "@/components/configuration-manager";
+import { CodeOfConductView } from "@/components/code-of-conduct-view";
 import { AttendanceCalendar } from "@/components/attendance-calendar";
 import { BirthdaysView } from "@/components/birthdays-view";
 import { Input } from "@/components/ui/input";
@@ -73,10 +75,11 @@ import {
 import type { Integrante, PortalData, PortalUser } from "@/lib/portal-types";
 import { UserAdminManager } from "@/components/user-admin-manager";
 
-type ViewId = "inicio" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "habilidades" | "desempenos" | "reportes" | "configuracion" | "administracion";
+type ViewId = "inicio" | "convivencia" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "habilidades" | "desempenos" | "reportes" | "configuracion" | "administracion";
 
 const navigation: Array<{ id: ViewId; label: string; icon: typeof Home }> = [
   { id: "inicio", label: "Inicio", icon: Home },
+  { id: "convivencia", label: "Código de Convivencia", icon: FileText },
   { id: "integrantes", label: "Integrantes", icon: UsersRound },
   { id: "asistencia", label: "Asistencia", icon: BookOpenCheck },
   { id: "cumpleanios", label: "Cumpleaños", icon: CakeSlice },
@@ -364,26 +367,29 @@ export function PortalShell({
   data,
   user,
   logoutControl,
+  conductAcceptanceRequired,
 }: {
   data: PortalData;
   user: PortalUser;
   logoutControl: ReactNode;
+  conductAcceptanceRequired: boolean;
 }) {
   const router = useRouter();
   const isAdmin = user.role === "admin";
   const isTrainer = user.role === "capacitador";
   const canEditScoring = isAdmin || isTrainer;
-  const [view, setView] = useState<ViewId>(() => isAdmin ? "inicio" : isTrainer ? "habilidades" : (data.userScreens[0] ?? "integrantes"));
+  const [view, setView] = useState<ViewId>(() => conductAcceptanceRequired ? "convivencia" : isAdmin ? "inicio" : isTrainer ? "habilidades" : (data.userScreens[0] ?? "integrantes"));
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const availableNavigation = useMemo(
     () => {
+      if (conductAcceptanceRequired) return navigation.filter((item) => item.id === "convivencia");
       if (isAdmin) return navigation;
-      if (isTrainer) return navigation.filter((item) => item.id === "cumpleanios" || item.id === "habilidades" || item.id === "desempenos");
-      const allowed = new Set<string>(data.userScreens);
+      if (isTrainer) return navigation.filter((item) => item.id === "convivencia" || item.id === "cumpleanios" || item.id === "habilidades" || item.id === "desempenos");
+      const allowed = new Set<string>(["convivencia", ...data.userScreens]);
       return navigation.filter((item) => allowed.has(item.id));
     },
-    [data.userScreens, isAdmin, isTrainer],
+    [conductAcceptanceRequired, data.userScreens, isAdmin, isTrainer],
   );
 
   const filteredMembers = useMemo(() => {
@@ -443,7 +449,7 @@ export function PortalShell({
         <header className="topbar">
           <div className="topbar-title"><SidebarTrigger className="sidebar-trigger"><Menu /></SidebarTrigger><div><p>Panel de gestión</p><h1>{title}</h1></div></div>
           <div className="topbar-actions">
-            {view !== "integrantes" && view !== "configuracion" && view !== "administracion" && view !== "desempenos" && view !== "cuota" && view !== "habilidades" ? <label className="search-box"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar integrante…" aria-label="Buscar integrante" /></label> : null}
+            {view !== "convivencia" && view !== "integrantes" && view !== "configuracion" && view !== "administracion" && view !== "desempenos" && view !== "cuota" && view !== "habilidades" ? <label className="search-box"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar integrante…" aria-label="Buscar integrante" /></label> : null}
             <Button variant="outline" size="icon" onClick={refresh} aria-label="Actualizar datos"><RefreshCw className={refreshing ? "spin" : ""} /></Button>
             <button className="notification-button" aria-label="Notificaciones"><Bell /><span>2</span></button>
             <div className="user-chip">
@@ -465,6 +471,7 @@ export function PortalShell({
 
         <main className="content-area">
           {view === "inicio" ? <DashboardView data={data} integrantes={filteredMembers} onNavigate={setView} /> : null}
+          {view === "convivencia" ? <CodeOfConductView user={user} locked={conductAcceptanceRequired} /> : null}
           {view === "integrantes" ? <IntegrantesManager data={data} /> : null}
           {view === "asistencia" ? <AttendanceCalendar rows={filteredAttendance} /> : null}
           {view === "cumpleanios" ? <BirthdaysView items={data.cumpleanios} showPrivateDetails={isAdmin} /> : null}

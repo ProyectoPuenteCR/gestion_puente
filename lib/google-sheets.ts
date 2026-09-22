@@ -4,6 +4,8 @@ import type {
   Asistencia,
   BirthdayAutomationMember,
   BirthdayAutomationSettings,
+  CodeOfConductAcceptance,
+  CodeOfConductUserStatus,
   ConfigCategory,
   ConfigItem,
   Integrante,
@@ -1251,7 +1253,7 @@ export async function readGoogleSheetsData() {
     ...item,
     email: item.email || emailByName.get(normalizeHeader(item.name)) || "",
   }));
-  const allowedScreens = new Set<UserScreen>(["inicio", "integrantes", "asistencia", "cumpleanios", "cuota", "reportes"]);
+  const allowedScreens = new Set<UserScreen>(["inicio", "convivencia", "integrantes", "asistencia", "cumpleanios", "cuota", "reportes"]);
   const config = parseConfig(ranges[4]?.values ?? []);
   const configuredScreens = config
     .filter((item) => item.type === "PANTALLA" && item.active && allowedScreens.has(item.value as UserScreen))
@@ -1575,4 +1577,321 @@ export async function addPerformanceComment(
     } },
   ]);
   return { id, fecha: now, emailIntegrante: email, integrante: name, comentario: comment, creadoPor: actor.email, rolAutor: actor.role, anio: yearValue } satisfies PerformanceComment;
+}
+
+const CODE_OF_CONDUCT_SHEET = "Aceptaciones Codigo";
+const CODE_OF_CONDUCT_FILE_ID = process.env.GOOGLE_DRIVE_CONDUCT_CODE_FILE_ID?.trim() || "1MdWwVC43y7fk2SG4Gaw-FiqHNSgFDEGY";
+const CODE_OF_CONDUCT_REVISION = "2026";
+const CODE_OF_CONDUCT_DATE = "08-02-2026";
+const CODE_OF_CONDUCT_DEFAULT_NAME = "COD CONVIVENCIA 2026 .docx";
+const CODE_OF_CONDUCT_HEADERS = [
+  "ID",
+  "Email",
+  "Integrante",
+  "DNI",
+  "Rol",
+  "Documento",
+  "Version",
+  "DriveModifiedTime",
+  "FechaAceptacion",
+  "AceptoCodigo",
+  "AceptoImagenes",
+  "AceptoCuota",
+  "MotivoCuotaNo",
+  "RequiereFirmaTutor",
+] as const;
+
+type CodeOfConductDocument = {
+  fileId: string;
+  name: string;
+  revision: string;
+  documentDate: string;
+  modifiedTime: string;
+  previewUrl: string;
+  viewUrl: string;
+};
+
+async function ensureCodeOfConductSheet() {
+  let ids = await sheetIds();
+  if (typeof ids[CODE_OF_CONDUCT_SHEET] === "number") return ids[CODE_OF_CONDUCT_SHEET];
+
+  await writeRequests([{
+    addSheet: {
+      properties: {
+        title: CODE_OF_CONDUCT_SHEET,
+        gridProperties: { rowCount: 5000, columnCount: CODE_OF_CONDUCT_HEADERS.length, frozenRowCount: 1 },
+      },
+    },
+  }]);
+  globalGoogleCache.__proyectoPuenteSheetIds = undefined;
+  ids = await sheetIds();
+  const sheetId = ids[CODE_OF_CONDUCT_SHEET];
+  if (typeof sheetId !== "number") throw new Error("No se pudo crear la hoja de aceptaciones del Código de Convivencia.");
+
+  await writeRequests([{
+    updateCells: {
+      range: {
+        sheetId,
+        startRowIndex: 0,
+        endRowIndex: 1,
+        startColumnIndex: 0,
+        endColumnIndex: CODE_OF_CONDUCT_HEADERS.length,
+      },
+      rows: [{ values: CODE_OF_CONDUCT_HEADERS.map((value) => cellData(value)) }],
+      fields: "userEnteredValue",
+    },
+  }]);
+  return sheetId;
+}
+
+async function readCodeOfConductDocument(): Promise<CodeOfConductDocument> {
+  let name = CODE_OF_CONDUCT_DEFAULT_NAME;
+  let modifiedTime = "";
+  let viewUrl = "https://drive.google.com/file/d/" + CODE_OF_CONDUCT_FILE_ID + "/view";
+  try {
+    const token = await getGoogleAccessToken();
+    const fields = encodeURIComponent("id,name,mimeType,modifiedTime,webViewLink");
+    const response = await fetch(
+      "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(CODE_OF_CONDUCT_FILE_ID) + "?fields=" + fields + "&supportsAllDrives=true",
+      { headers: { authorization: "Bearer " + token }, cache: "no-store" },
+    );
+    if (response.ok) {
+      const metadata = await response.json() as { name?: string; modifiedTime?: string; webViewLink?: string };
+      name = metadata.name || name;
+      modifiedTime = metadata.modifiedTime || "";
+      viewUrl = metadata.webViewLink || viewUrl;
+    }
+  } catch {
+    // El documento sigue disponible por su enlace público aunque falle la consulta de metadatos.
+  }
+  return {
+    fileId: CODE_OF_CONDUCT_FILE_ID,
+    name,
+    revision: CODE_OF_CONDUCT_REVISION,
+    documentDate: CODE_OF_CONDUCT_DATE,
+    modifiedTime,
+    previewUrl: "https://drive.google.com/file/d/" + CODE_OF_CONDUCT_FILE_ID + "/preview",
+    viewUrl,
+  };
+}
+
+function parseCodeOfConductAcceptances(rows: SheetRows): CodeOfConductAcceptance[] {
+  return rows.slice(1).flatMap((row) => {
+    const id = cellText(row[0]);
+    const email = normalizeEmail(cellText(row[1]));
+    const name = cellText(row[2]);
+    if (!id || !email || !name) return [];
+    const roleValue = normalizeHeader(row[4]);
+    const role: UserRole = roleValue === "admin" ? "admin" : roleValue === "capacitador" ? "capacitador" : "usuario";
+    return [{
+      id,
+      email,
+      name,
+      dni: cellText(row[3]),
+      role,
+      documentName: cellText(row[5]) || CODE_OF_CONDUCT_DEFAULT_NAME,
+      revision: cellText(row[6]) || CODE_OF_CONDUCT_REVISION,
+      driveModifiedTime: cellText(row[7]),
+      acceptedAt: cellText(row[8]),
+      acceptsCode: parseBoolean(row[9]),
+      acceptsImages: parseBoolean(row[10]),
+      acceptsFee: parseBoolean(row[11]),
+      feeReason: cellText(row[12]),
+      requiresTutorSignature: parseBoolean(row[13]),
+    } satisfies CodeOfConductAcceptance];
+  }).sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt));
+}
+
+async function readCodeOfConductRows() {
+  await ensureCodeOfConductSheet();
+  const payload = await readRanges(["'" + CODE_OF_CONDUCT_SHEET + "'!A1:N5000"]);
+  return parseCodeOfConductAcceptances(payload.valueRanges?.[0]?.values ?? []);
+}
+
+function isCurrentCodeAcceptance(record: CodeOfConductAcceptance, document: CodeOfConductDocument) {
+  if (!record.acceptsCode) return false;
+  if (document.modifiedTime) return record.driveModifiedTime === document.modifiedTime;
+  return record.revision === document.revision;
+}
+
+function platformUsersForCode(state: ManagementState) {
+  const people = new Map<string, { email: string; name: string; role: UserRole }>();
+  for (const member of state.members) {
+    const email = normalizeEmail(String(member.values[MEMBER_EMAIL_HEADER] ?? ""));
+    const name = cellText(member.values[MEMBER_NAME_HEADER]);
+    if (!email) continue;
+    people.set(email, { email, name: name || email, role: "usuario" });
+  }
+  for (const account of state.accounts) {
+    if (!account.active) continue;
+    const current = people.get(account.email);
+    people.set(account.email, {
+      email: account.email,
+      name: account.name || current?.name || account.email,
+      role: account.role,
+    });
+  }
+  for (const email of configuredAdminEmails()) {
+    const current = people.get(email);
+    people.set(email, { email, name: current?.name || email, role: "admin" });
+  }
+  return [...people.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+export async function readCodeOfConductSnapshot(viewer: { email: string; role: UserRole }) {
+  const [document, state, records] = await Promise.all([
+    readCodeOfConductDocument(),
+    managementState(),
+    readCodeOfConductRows(),
+  ]);
+  const viewerEmail = normalizeEmail(viewer.email);
+  const ownRecords = records.filter((record) => record.email === viewerEmail);
+  const acceptance = ownRecords.find((record) => isCurrentCodeAcceptance(record, document)) ?? null;
+  const previousAcceptance = ownRecords.find((record) => !isCurrentCodeAcceptance(record, document)) ?? null;
+
+  let admin: {
+    summary: { total: number; accepted: number; pending: number; outdated: number };
+    users: CodeOfConductUserStatus[];
+  } | null = null;
+
+  if (viewer.role === "admin") {
+    const users = platformUsersForCode(state).map((person) => {
+      const personRecords = records.filter((record) => record.email === person.email);
+      const current = personRecords.find((record) => isCurrentCodeAcceptance(record, document));
+      const latest = current ?? personRecords[0];
+      return {
+        email: person.email,
+        name: person.name,
+        role: person.role,
+        status: current ? "accepted" : latest ? "outdated" : "pending",
+        acceptedAt: latest?.acceptedAt ?? "",
+        dni: latest?.dni ?? "",
+        requiresTutorSignature: latest?.requiresTutorSignature ?? false,
+      } satisfies CodeOfConductUserStatus;
+    });
+    const accepted = users.filter((item) => item.status === "accepted").length;
+    const outdated = users.filter((item) => item.status === "outdated").length;
+    admin = {
+      summary: { total: users.length, accepted, outdated, pending: users.length - accepted - outdated },
+      users,
+    };
+  }
+
+  return { document, acceptance, previousAcceptance, canSign: true, admin };
+}
+
+export async function hasAcceptedCurrentCode(email: string) {
+  const snapshot = await readCodeOfConductSnapshot({ email, role: "usuario" });
+  return Boolean(snapshot.acceptance);
+}
+
+export async function acceptCodeOfConduct(
+  input: {
+    dni: string;
+    acceptsCode: boolean;
+    acceptsImages: boolean;
+    acceptsFee: boolean;
+    feeReason?: string;
+  },
+  actor: { email: string; role: UserRole },
+) {
+  if (input.acceptsCode !== true) throw new Error("Debés confirmar que leíste y aceptás el Código de Convivencia.");
+  if (typeof input.acceptsImages !== "boolean") throw new Error("Indicá si aceptás el uso institucional de imágenes.");
+  if (typeof input.acceptsFee !== "boolean") throw new Error("Indicá si aceptás cumplir con la cuota societaria.");
+
+  const dni = String(input.dni ?? "").replace(/\D/g, "");
+  if (dni.length < 7 || dni.length > 9) throw new Error("Ingresá un DNI válido, sólo con números.");
+  const feeReason = String(input.feeReason ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+  if (!input.acceptsFee && !feeReason) throw new Error("Si no aceptás la cuota, explicá la causa para que sea evaluada por la Comisión.");
+
+  const [document, state, records, acceptanceSheetId] = await Promise.all([
+    readCodeOfConductDocument(),
+    managementState(),
+    readCodeOfConductRows(),
+    ensureCodeOfConductSheet(),
+  ]);
+  const email = normalizeEmail(actor.email);
+  const member = state.members.find((item) => normalizeEmail(String(item.values[MEMBER_EMAIL_HEADER] ?? "")) === email);
+  const account = state.accounts.find((item) => item.email === email && item.active);
+  const name = member ? cellText(member.values[MEMBER_NAME_HEADER]) : account?.name || email;
+
+  const storedDni = member ? String(member.values["DNI"] ?? "").replace(/\D/g, "") : "";
+  if (storedDni && storedDni !== dni) throw new Error("El DNI ingresado no coincide con el DNI registrado en tu ficha.");
+
+  const existing = records.find((record) => record.email === email && isCurrentCodeAcceptance(record, document));
+  if (existing) return existing;
+
+  const requiresTutorSignature = Boolean(member && member.age !== null && member.age < 18);
+  const id = crypto.randomUUID();
+  const acceptedAt = new Date().toISOString();
+  const record: CodeOfConductAcceptance = {
+    id,
+    email,
+    name,
+    dni,
+    role: actor.role,
+    documentName: document.name,
+    revision: document.revision,
+    driveModifiedTime: document.modifiedTime,
+    acceptedAt,
+    acceptsCode: true,
+    acceptsImages: input.acceptsImages,
+    acceptsFee: input.acceptsFee,
+    feeReason,
+    requiresTutorSignature,
+  };
+
+  const requests: Array<Record<string, unknown>> = [{
+    appendCells: {
+      sheetId: acceptanceSheetId,
+      rows: [{
+        values: [
+          record.id,
+          record.email,
+          record.name,
+          record.dni,
+          record.role,
+          record.documentName,
+          record.revision,
+          record.driveModifiedTime,
+          record.acceptedAt,
+          record.acceptsCode,
+          record.acceptsImages,
+          record.acceptsFee,
+          record.feeReason,
+          record.requiresTutorSignature,
+        ].map((value) => cellData(value)),
+      }],
+      fields: "userEnteredValue",
+    },
+  }];
+
+  const ids = await sheetIds();
+  if (member && typeof ids.Integrantes === "number") {
+    const conductColumn = MEMBER_HEADERS.indexOf("Conozco el codigo de conducta de Proyecto Puente");
+    requests.push({
+      updateCells: {
+        range: {
+          sheetId: ids.Integrantes,
+          startRowIndex: member.rowNumber - 1,
+          endRowIndex: member.rowNumber,
+          startColumnIndex: conductColumn,
+          endColumnIndex: conductColumn + 1,
+        },
+        rows: [{ values: [cellData("Sí")] }],
+        fields: "userEnteredValue",
+      },
+    });
+  }
+  if (typeof ids.LOG === "number") {
+    requests.push({
+      appendCells: {
+        sheetId: ids.LOG,
+        rows: [logRow(actor, "CODIGO_CONVIVENCIA_ACEPTADO", email, name, "Código de Convivencia REV " + document.revision, "", "Aceptado")],
+        fields: "userEnteredValue",
+      },
+    });
+  }
+  await writeRequests(requests);
+  return record;
 }

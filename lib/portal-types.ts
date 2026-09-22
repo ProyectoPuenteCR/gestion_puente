@@ -9,6 +9,33 @@ export type PortalUser = {
   role: UserRole;
 };
 
+export type CodeOfConductAcceptance = {
+  id: string;
+  email: string;
+  name: string;
+  dni: string;
+  role: UserRole;
+  documentName: string;
+  revision: string;
+  driveModifiedTime: string;
+  acceptedAt: string;
+  acceptsCode: boolean;
+  acceptsImages: boolean;
+  acceptsFee: boolean;
+  feeReason: string;
+  requiresTutorSignature: boolean;
+};
+
+export type CodeOfConductUserStatus = {
+  email: string;
+  name: string;
+  role: UserRole;
+  status: "accepted" | "outdated" | "pending";
+  acceptedAt: string;
+  dni: string;
+  requiresTutorSignature: boolean;
+};
+
 export type MemberFieldValue = string | boolean;
 
 export type MemberRecord = {
@@ -34,7 +61,7 @@ export type ConfigCategory =
   | "CUMPLEANOS_ASUNTO"
   | "CUMPLEANOS_MENSAJE";
 
-export type UserScreen = "inicio" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "desempenos" | "reportes";
+export type UserScreen = "inicio" | "convivencia" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "desempenos" | "reportes";
 
 export type ConfigItem = {
   rowNumber: number;
