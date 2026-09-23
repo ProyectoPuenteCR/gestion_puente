@@ -1,3 +1,6 @@
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/31acd6a0-95ea-424c-a9e1-ee0c1ad12fe7" />
+
+
 # Proyecto Puente — panel de gestión
 
 Panel privado en Next.js para administrar la hoja `INTEGRANTES 2026` desde Vercel mediante una cuenta de servicio de Google.
