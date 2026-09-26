@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NewMembersManager } from "@/components/new-members-manager";
 import { memberReportHtml } from "@/lib/member-report";
 import type { ConfigCategory, MemberFieldValue, MemberManagementPayload, MemberRecord, PerformanceComment, PortalData } from "@/lib/portal-types";
 
@@ -508,6 +509,7 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
         </div>
         <div className="manager-actions">
           {payload.canManage ? <Button className="add-member-button" onClick={() => openEdit(null)}><Plus /> Agregar integrante</Button> : null}
+          {payload.canManage ? <NewMembersManager onMemberIncorporated={() => { setNotice("El nuevo integrante fue incorporado al padrón."); void load(); }} /> : null}
           <Button variant="outline" disabled={!selectedMember || !payload.canEdit} onClick={() => openEdit(selectedMember)}><Pencil /> Modificar</Button>
           {payload.canManage ? <Button variant="destructive" disabled={!selectedMember} onClick={() => setBajaOpen(true)}><UserMinus /> Baja</Button> : null}
           <Button variant="outline" onClick={() => void exportExcel()}><Download /> Exportar Excel</Button>

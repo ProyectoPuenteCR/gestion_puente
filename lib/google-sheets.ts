@@ -13,6 +13,8 @@ import type {
   Integrante,
   MemberFieldValue,
   MemberRecord,
+  NewMemberRequest,
+  NewMemberRequestStatus,
   PerformanceComment,
   PlatformAccount,
   ScoringColumn,
@@ -2133,3 +2135,464 @@ export async function acceptCodeOfConduct(
   await writeRequests(requests);
   return record;
 }
+
+const NEW_MEMBERS_SHEET = "Integrantes Nuevos";
+const NEW_MEMBER_META_HEADERS = [
+  "ID",
+  "TokenHash",
+  "CreadoEn",
+  "ExpiraEn",
+  "CreadoPor",
+  "EnviadoEn",
+  "Estado",
+  "RevisadoEn",
+  "RevisadoPor",
+  "MotivoRechazo",
+  "EmailPuente",
+  "IncorporadoEn",
+  "IncorporadoPor",
+] as const;
+const NEW_MEMBER_META_COUNT = NEW_MEMBER_META_HEADERS.length;
+const NEW_MEMBER_ALL_HEADERS = [...NEW_MEMBER_META_HEADERS, ...MEMBER_HEADERS];
+const NEW_MEMBER_RANGE = "'" + NEW_MEMBERS_SHEET + "'!A1:AR5000";
+const NEW_MEMBER_PUBLIC_EXCLUDED = new Set<MemberHeader>([
+  "Numero de orden",
+  "Numero de Matricula",
+  MEMBER_EMAIL_HEADER,
+  "Confirmo asistencia al ciclo 2026 de Proyecto Puente",
+  "Conozco el codigo de conducta de Proyecto Puente",
+  "Cuota Social",
+  MEMBER_AGE_HEADER,
+  "Tarea que desempeño dentro del Proyecto",
+  "Año de ingreso al Proyecto",
+  "Marca temporal",
+  "Foto",
+]);
+const NEW_MEMBER_REQUIRED_FIELDS: MemberHeader[] = [
+  MEMBER_NAME_HEADER,
+  "CELULAR",
+  "Dirección Actual donde vivo",
+];
+const NEW_MEMBER_STORED_STATUSES = new Set<NewMemberRequestStatus>([
+  "invitation",
+  "pending",
+  "approved",
+  "rejected",
+  "incorporated",
+]);
+
+function publicNewMemberHeaders() {
+  return MEMBER_HEADERS.filter((header) => !NEW_MEMBER_PUBLIC_EXCLUDED.has(header));
+}
+
+async function ensureNewMembersSheet() {
+  let ids = await sheetIds();
+  if (typeof ids[NEW_MEMBERS_SHEET] !== "number") {
+    await writeRequests([{
+      addSheet: {
+        properties: {
+          title: NEW_MEMBERS_SHEET,
+          gridProperties: { rowCount: 5000, columnCount: NEW_MEMBER_ALL_HEADERS.length, frozenRowCount: 1 },
+        },
+      },
+    }]);
+    globalGoogleCache.__proyectoPuenteSheetIds = undefined;
+    ids = await sheetIds();
+  }
+  const sheetId = ids[NEW_MEMBERS_SHEET];
+  if (typeof sheetId !== "number") throw new Error("No se pudo crear la hoja Integrantes Nuevos.");
+  await writeRequests([
+    {
+      updateSheetProperties: {
+        properties: { sheetId, gridProperties: { columnCount: NEW_MEMBER_ALL_HEADERS.length } },
+        fields: "gridProperties.columnCount",
+      },
+    },
+    {
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: NEW_MEMBER_ALL_HEADERS.length,
+        },
+        rows: [{ values: NEW_MEMBER_ALL_HEADERS.map((value) => cellData(value)) }],
+        fields: "userEnteredValue",
+      },
+    },
+  ]);
+  return sheetId;
+}
+
+function newMemberStatus(value: SheetValue, expiresAt: string): NewMemberRequestStatus {
+  const raw = cellText(value) as NewMemberRequestStatus;
+  if (raw === "invitation" && expiresAt && Date.parse(expiresAt) <= Date.now()) return "expired";
+  return NEW_MEMBER_STORED_STATUSES.has(raw) ? raw : "invitation";
+}
+
+function newMemberRequestFromRow(row: SheetValue[], index: number): NewMemberRequest | null {
+  const id = cellText(row[0]);
+  if (!id) return null;
+  const expiresAt = cellText(row[3]);
+  const values = Object.fromEntries(MEMBER_HEADERS.map((header, memberIndex) => {
+    const value = row[NEW_MEMBER_META_COUNT + memberIndex];
+    if (header === MEMBER_BIRTHDAY_HEADER) return [header, parseSheetDate(value) ?? ""];
+    return [header, typeof value === "boolean" ? value : cellText(value)];
+  })) as Record<string, MemberFieldValue>;
+  return {
+    id,
+    rowNumber: index + 2,
+    status: newMemberStatus(row[6], expiresAt),
+    createdAt: cellText(row[2]),
+    expiresAt,
+    createdBy: normalizeEmail(cellText(row[4])) || cellText(row[4]),
+    submittedAt: cellText(row[5]),
+    reviewedAt: cellText(row[7]),
+    reviewedBy: normalizeEmail(cellText(row[8])) || cellText(row[8]),
+    rejectionReason: cellText(row[9]),
+    emailPuente: normalizeEmail(cellText(row[10])),
+    incorporatedAt: cellText(row[11]),
+    incorporatedBy: normalizeEmail(cellText(row[12])) || cellText(row[12]),
+    values,
+  };
+}
+
+async function newMembersState() {
+  const sheetId = await ensureNewMembersSheet();
+  const payload = await readRanges([NEW_MEMBER_RANGE]);
+  const rawRows = payload.valueRanges?.[0]?.values ?? [];
+  const requests = rawRows.slice(1).flatMap((row, index) => newMemberRequestFromRow(row, index) ?? []);
+  return { sheetId, rawRows, requests };
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashInvitationToken(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return bytesToHex(new Uint8Array(digest));
+}
+
+function newInvitationToken() {
+  return base64UrlFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+function normalizedDni(value: MemberFieldValue | undefined) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function sanitizeNewMemberValues(incoming: Record<string, MemberFieldValue>) {
+  const allowed = new Set(publicNewMemberHeaders());
+  const values = baseRecord();
+  for (const [key, value] of Object.entries(incoming)) {
+    if (!allowed.has(key as MemberHeader)) continue;
+    values[key as MemberHeader] = typeof value === "boolean" ? value : String(value ?? "").trim().slice(0, 2000);
+  }
+  values[MEMBER_EMAIL_HEADER] = "";
+  values["Numero de orden"] = "";
+  values["Numero de Matricula"] = "";
+  values[MEMBER_AGE_HEADER] = "";
+  values["Marca temporal"] = new Date().toISOString();
+  values["Año de ingreso al Proyecto"] = "";
+  return values;
+}
+
+function requestRowValues(request: {
+  id: string;
+  tokenHash: string;
+  createdAt: string;
+  expiresAt: string;
+  createdBy: string;
+  submittedAt: string;
+  status: Exclude<NewMemberRequestStatus, "expired">;
+  reviewedAt: string;
+  reviewedBy: string;
+  rejectionReason: string;
+  emailPuente: string;
+  incorporatedAt: string;
+  incorporatedBy: string;
+  values: Record<string, MemberFieldValue>;
+}) {
+  return [
+    request.id,
+    request.tokenHash,
+    request.createdAt,
+    request.expiresAt,
+    request.createdBy,
+    request.submittedAt,
+    request.status,
+    request.reviewedAt,
+    request.reviewedBy,
+    request.rejectionReason,
+    request.emailPuente,
+    request.incorporatedAt,
+    request.incorporatedBy,
+    ...MEMBER_HEADERS.map((header) => request.values[header] ?? ""),
+  ];
+}
+
+export async function createNewMemberInvitation(actor: { email: string; role: UserRole }) {
+  const { sheetId } = await newMembersState();
+  const token = newInvitationToken();
+  const tokenHash = await hashInvitationToken(token);
+  const now = new Date();
+  const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const id = crypto.randomUUID();
+  const emptyValues = baseRecord();
+  await writeRequests([{
+    appendCells: {
+      sheetId,
+      rows: [{
+        values: requestRowValues({
+          id,
+          tokenHash,
+          createdAt: now.toISOString(),
+          expiresAt: expires.toISOString(),
+          createdBy: actor.email,
+          submittedAt: "",
+          status: "invitation",
+          reviewedAt: "",
+          reviewedBy: "",
+          rejectionReason: "",
+          emailPuente: "",
+          incorporatedAt: "",
+          incorporatedBy: "",
+          values: emptyValues,
+        }).map((value) => cellData(value)),
+      }],
+      fields: "userEnteredValue",
+    },
+  }]);
+  return { token, expiresAt: expires.toISOString() };
+}
+
+async function requestForToken(tokenValue: string) {
+  const token = tokenValue.trim();
+  if (token.length < 20 || token.length > 200) throw new Error("El enlace de invitación no es válido.");
+  const hash = await hashInvitationToken(token);
+  const state = await newMembersState();
+  const rawRows = state.rawRows.slice(1);
+  const rowIndex = rawRows.findIndex((row) => cellText(row[1]) === hash);
+  if (rowIndex < 0) throw new Error("El enlace de invitación no existe o ya no está disponible.");
+  const request = newMemberRequestFromRow(rawRows[rowIndex], rowIndex);
+  if (!request) throw new Error("La invitación no es válida.");
+  if (request.status === "expired" || Date.parse(request.expiresAt) <= Date.now()) throw new Error("Este enlace venció. Solicitá una nueva invitación.");
+  if (request.status !== "invitation") throw new Error("Este enlace ya fue utilizado.");
+  return { state, request, tokenHash: hash };
+}
+
+export async function readPublicNewMemberInvitation(token: string) {
+  const [{ request }, state] = await Promise.all([
+    requestForToken(token),
+    managementState(),
+  ]);
+  return {
+    expiresAt: request.expiresAt,
+    headers: publicNewMemberHeaders(),
+    config: state.config.filter((item) =>
+      item.active && (item.type === "HORARIO" || item.type === "TITULO" || item.type === "ACTIVIDAD"),
+    ),
+  };
+}
+
+export async function submitNewMemberApplication(token: string, incoming: Record<string, MemberFieldValue>) {
+  const [{ state, request, tokenHash }, management] = await Promise.all([
+    requestForToken(token),
+    managementState(),
+  ]);
+  const values = sanitizeNewMemberValues(incoming);
+  for (const field of NEW_MEMBER_REQUIRED_FIELDS) {
+    if (!cellText(values[field])) {
+      const label = field === MEMBER_NAME_HEADER ? "Nombre y apellido" : field === "CELULAR" ? "Teléfono" : "Dirección";
+      throw new Error(label + " es obligatorio.");
+    }
+  }
+
+  const dni = normalizedDni(values["DNI"]);
+  if (dni) {
+    const existingMember = management.members.some((member) => normalizedDni(member.values["DNI"]) === dni);
+    if (existingMember) throw new Error("Ya existe un integrante registrado con ese DNI.");
+    const duplicateRequest = state.requests.some((item) =>
+      item.id !== request.id &&
+      item.status !== "rejected" &&
+      normalizedDni(item.values["DNI"]) === dni,
+    );
+    if (duplicateRequest) throw new Error("Ya existe una solicitud en curso con ese DNI.");
+  }
+
+  const now = new Date().toISOString();
+  const rowValues = requestRowValues({
+    id: request.id,
+    tokenHash,
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+    createdBy: request.createdBy,
+    submittedAt: now,
+    status: "pending",
+    reviewedAt: "",
+    reviewedBy: "",
+    rejectionReason: "",
+    emailPuente: "",
+    incorporatedAt: "",
+    incorporatedBy: "",
+    values,
+  });
+  await writeRequests([{
+    updateCells: {
+      range: {
+        sheetId: state.sheetId,
+        startRowIndex: request.rowNumber - 1,
+        endRowIndex: request.rowNumber,
+        startColumnIndex: 0,
+        endColumnIndex: NEW_MEMBER_ALL_HEADERS.length,
+      },
+      rows: [{ values: rowValues.map((value) => cellData(value)) }],
+      fields: "userEnteredValue",
+    },
+  }]);
+  return { id: request.id, submittedAt: now };
+}
+
+export async function readNewMemberRequests() {
+  const state = await newMembersState();
+  return state.requests.sort((a, b) =>
+    (b.submittedAt || b.createdAt).localeCompare(a.submittedAt || a.createdAt),
+  );
+}
+
+function storedRequestStatus(status: NewMemberRequestStatus): Exclude<NewMemberRequestStatus, "expired"> {
+  return status === "expired" ? "invitation" : status;
+}
+
+async function updateNewMemberRequest(
+  request: NewMemberRequest,
+  patch: Partial<{
+    status: Exclude<NewMemberRequestStatus, "expired">;
+    reviewedAt: string;
+    reviewedBy: string;
+    rejectionReason: string;
+    emailPuente: string;
+    incorporatedAt: string;
+    incorporatedBy: string;
+  }>,
+) {
+  const { sheetId, rawRows } = await newMembersState();
+  const raw = rawRows[request.rowNumber - 1] ?? [];
+  const tokenHash = cellText(raw[1]);
+  const values = requestRowValues({
+    id: request.id,
+    tokenHash,
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+    createdBy: request.createdBy,
+    submittedAt: request.submittedAt,
+    status: patch.status ?? storedRequestStatus(request.status),
+    reviewedAt: patch.reviewedAt ?? request.reviewedAt,
+    reviewedBy: patch.reviewedBy ?? request.reviewedBy,
+    rejectionReason: patch.rejectionReason ?? request.rejectionReason,
+    emailPuente: patch.emailPuente ?? request.emailPuente,
+    incorporatedAt: patch.incorporatedAt ?? request.incorporatedAt,
+    incorporatedBy: patch.incorporatedBy ?? request.incorporatedBy,
+    values: request.values,
+  });
+  await writeRequests([{
+    updateCells: {
+      range: {
+        sheetId,
+        startRowIndex: request.rowNumber - 1,
+        endRowIndex: request.rowNumber,
+        startColumnIndex: 0,
+        endColumnIndex: NEW_MEMBER_ALL_HEADERS.length,
+      },
+      rows: [{ values: values.map((value) => cellData(value)) }],
+      fields: "userEnteredValue",
+    },
+  }]);
+}
+
+export async function approveNewMemberRequest(idValue: string, actor: { email: string; role: UserRole }) {
+  const id = idValue.trim();
+  const requests = await readNewMemberRequests();
+  const request = requests.find((item) => item.id === id);
+  if (!request) throw new Error("La solicitud no existe.");
+  if (request.status !== "pending") throw new Error("Sólo se pueden aprobar solicitudes pendientes.");
+  const now = new Date().toISOString();
+  await updateNewMemberRequest(request, {
+    status: "approved",
+    reviewedAt: now,
+    reviewedBy: actor.email,
+    rejectionReason: "",
+  });
+  const ids = await sheetIds();
+  if (typeof ids.LOG === "number") {
+    await writeRequests([{
+      appendCells: {
+        sheetId: ids.LOG,
+        rows: [logRow(actor, "SOLICITUD_INGRESO_APROBADA", "", cellText(request.values[MEMBER_NAME_HEADER]), "Ingreso", "Pendiente", "Aprobado pendiente de email")],
+        fields: "userEnteredValue",
+      },
+    }]);
+  }
+  return { ok: true };
+}
+
+export async function rejectNewMemberRequest(idValue: string, reasonValue: string, actor: { email: string; role: UserRole }) {
+  const id = idValue.trim();
+  const reason = reasonValue.replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (!reason) throw new Error("Indicá el motivo del rechazo.");
+  const requests = await readNewMemberRequests();
+  const request = requests.find((item) => item.id === id);
+  if (!request) throw new Error("La solicitud no existe.");
+  if (request.status !== "pending" && request.status !== "approved") {
+    throw new Error("La solicitud ya no puede rechazarse.");
+  }
+  const now = new Date().toISOString();
+  await updateNewMemberRequest(request, {
+    status: "rejected",
+    reviewedAt: now,
+    reviewedBy: actor.email,
+    rejectionReason: reason,
+  });
+  const ids = await sheetIds();
+  if (typeof ids.LOG === "number") {
+    await writeRequests([{
+      appendCells: {
+        sheetId: ids.LOG,
+        rows: [logRow(actor, "SOLICITUD_INGRESO_RECHAZADA", "", cellText(request.values[MEMBER_NAME_HEADER]), "Ingreso", request.status, reason)],
+        fields: "userEnteredValue",
+      },
+    }]);
+  }
+  return { ok: true };
+}
+
+export async function incorporateApprovedNewMember(
+  idValue: string,
+  emailValue: string,
+  actor: { email: string; role: UserRole },
+) {
+  const id = idValue.trim();
+  const email = normalizeEmail(emailValue);
+  requireInstitutionalEmail(email);
+  const requests = await readNewMemberRequests();
+  const request = requests.find((item) => item.id === id);
+  if (!request) throw new Error("La solicitud no existe.");
+  if (request.status !== "approved") throw new Error("Primero tenés que aprobar la solicitud.");
+
+  const member = await createMember({
+    ...request.values,
+    [MEMBER_EMAIL_HEADER]: email,
+  }, actor);
+
+  const now = new Date().toISOString();
+  await updateNewMemberRequest(request, {
+    status: "incorporated",
+    emailPuente: email,
+    incorporatedAt: now,
+    incorporatedBy: actor.email,
+  });
+  return { member, email };
+}
+

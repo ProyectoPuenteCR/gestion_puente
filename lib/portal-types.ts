@@ -47,6 +47,25 @@ export type MemberRecord = {
   ageStatus: "Mayor de edad" | "Menor de edad" | "Sin fecha";
 };
 
+export type NewMemberRequestStatus = "invitation" | "expired" | "pending" | "approved" | "rejected" | "incorporated";
+
+export type NewMemberRequest = {
+  id: string;
+  rowNumber: number;
+  status: NewMemberRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  createdBy: string;
+  submittedAt: string;
+  reviewedAt: string;
+  reviewedBy: string;
+  rejectionReason: string;
+  emailPuente: string;
+  incorporatedAt: string;
+  incorporatedBy: string;
+  values: Record<string, MemberFieldValue>;
+};
+
 export type ConfigCategory =
   | "HORARIO"
   | "TITULO"
