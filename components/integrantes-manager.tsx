@@ -420,6 +420,7 @@ export function IntegrantesManager({
   const [visible, setVisible] = useState<string[]>([]);
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<number | null>(null);
+  const [selectedRows, setSelectedRows] = useState<number[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<MemberRecord | null>(null);
   const [bajaOpen, setBajaOpen] = useState(false);
@@ -447,7 +448,8 @@ export function IntegrantesManager({
       }
       return [...next.headers];
     });
-    setSelected((current) => current ?? next.rows[0]?.rowNumber ?? null);
+    setSelected((current) => current && next.rows.some((row) => row.rowNumber === current) ? current : next.rows[0]?.rowNumber ?? null);
+    setSelectedRows((current) => current.filter((rowNumber) => next.rows.some((row) => row.rowNumber === rowNumber)));
   }, []);
 
   const fetchPayload = useCallback(async () => {
@@ -582,6 +584,29 @@ export function IntegrantesManager({
     [payload, visible],
   );
   const selectedMember = payload?.rows.find((row) => row.rowNumber === selected) ?? null;
+  const selectedMembers = payload?.rows.filter((row) => selectedRows.includes(row.rowNumber)) ?? [];
+  const allPageSelected = pagedRows.length > 0 && pagedRows.every((row) => selectedRows.includes(row.rowNumber));
+
+  function toggleSelectedRow(rowNumber: number) {
+    setSelectedRows((current) => current.includes(rowNumber)
+      ? current.filter((item) => item !== rowNumber)
+      : [...current, rowNumber]);
+  }
+
+  function toggleCurrentPage() {
+    const pageRows = pagedRows.map((row) => row.rowNumber);
+    setSelectedRows((current) => {
+      if (allPageSelected) return current.filter((rowNumber) => !pageRows.includes(rowNumber));
+      return [...new Set([...current, ...pageRows])];
+    });
+  }
+
+  function prepareSingleBaja(member: MemberRecord) {
+    setSelected(member.rowNumber);
+    setSelectedRows([member.rowNumber]);
+    setReason("");
+    setBajaOpen(true);
+  }
 
   function openEdit(member: MemberRecord | null) {
     if (!payload?.canEdit) return;
@@ -654,21 +679,28 @@ export function IntegrantesManager({
   }
 
   async function confirmBaja() {
-    if (!selectedMember) return;
+    const rowsToDeactivate = selectedRows.length
+      ? selectedRows
+      : selectedMember
+        ? [selectedMember.rowNumber]
+        : [];
+    if (!rowsToDeactivate.length) return;
     setSavingBaja(true);
     setError("");
     try {
       const response = await fetch("/api/integrantes", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ rowNumber: selectedMember.rowNumber, reason }),
+        body: JSON.stringify({ rowNumbers: rowsToDeactivate, reason }),
       });
-      const body = await response.json().catch(() => null);
+      const body = await response.json().catch(() => null) as { count?: number; error?: string } | null;
       if (!response.ok) throw new Error(apiMessage(body));
+      const count = body?.count ?? rowsToDeactivate.length;
       setSelected(null);
+      setSelectedRows([]);
       setReason("");
       setBajaOpen(false);
-      setNotice("El integrante fue movido a la hoja Baja y su acceso quedó desactivado.");
+      setNotice(`${count} integrante${count === 1 ? "" : "s"} ${count === 1 ? "fue movido" : "fueron movidos"} a Baja Integrantes y ${count === 1 ? "su acceso quedó desactivado" : "sus accesos quedaron desactivados"}.`);
       await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo realizar la baja.");
@@ -788,6 +820,12 @@ export function IntegrantesManager({
             </div>
           </details>
 
+          {payload.canManage && selectedRows.length ? (
+            <Button className="member-bulk-baja" variant="destructive" onClick={() => { setReason(""); setBajaOpen(true); }}>
+              <UserMinus /> Dar de baja ({selectedRows.length})
+            </Button>
+          ) : null}
+
           <details className="member-more-menu">
             <summary><MoreHorizontal /> Más</summary>
             <div>
@@ -822,7 +860,14 @@ export function IntegrantesManager({
                 <table className="member-quick-table">
                   <thead>
                     <tr>
-                      <th className="check-cell"></th>
+                      <th className="check-cell">
+                        <input
+                          type="checkbox"
+                          checked={allPageSelected}
+                          onChange={toggleCurrentPage}
+                          aria-label="Seleccionar integrantes de esta página"
+                        />
+                      </th>
                       <th>Integrante</th>
                       <th>DNI</th>
                       <th>Turno</th>
@@ -842,7 +887,15 @@ export function IntegrantesManager({
                       const code = conductState(row);
                       return (
                         <tr key={row.id} className={selected === row.rowNumber ? "selected" : ""} onClick={() => { setSelected(row.rowNumber); setDetailTab("summary"); }} onDoubleClick={() => openEdit(row)}>
-                          <td className="check-cell"><input type="checkbox" checked={selected === row.rowNumber} readOnly aria-label={`Seleccionar ${name}`} /></td>
+                          <td className="check-cell">
+                            <input
+                              type="checkbox"
+                              checked={selectedRows.includes(row.rowNumber)}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={() => toggleSelectedRow(row.rowNumber)}
+                              aria-label={`Seleccionar ${name} para baja`}
+                            />
+                          </td>
                           <td><div className="member-person-cell">{photo ? <img src={photo} alt="" /> : <span>{memberInitials(name)}</span>}<div><strong>{name || "Sin nombre"}</strong><small>{email || String(row.values[PERSONAL_EMAIL] ?? "") || "Sin email"}</small></div></div></td>
                           <td>{String(row.values[DNI] ?? "") || "—"}</td>
                           <td><span className={`member-turn member-turn-${normalized(memberTurn(String(row.values[SCHEDULE] ?? "")))}`}>{memberTurn(String(row.values[SCHEDULE] ?? ""))}</span></td>
@@ -860,7 +913,7 @@ export function IntegrantesManager({
               </div>
 
               <footer className="member-table-footer">
-                <strong>{rows.length} integrantes {selectedMember ? "· 1 seleccionado" : ""}</strong>
+                <strong>{rows.length} integrantes {selectedRows.length ? `· ${selectedRows.length} seleccionado${selectedRows.length === 1 ? "" : "s"} para baja` : ""}</strong>
                 <div className="member-pagination">
                   <Button variant="outline" size="icon" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft /></Button>
                   {Array.from({ length: Math.min(5, maxPage) }, (_, index) => {
@@ -927,7 +980,7 @@ export function IntegrantesManager({
                         <Button variant="outline" onClick={() => onNavigate?.("desempenos")}><BarChart3 /> Ver desempeño</Button>
                         <Button variant="outline" onClick={() => onNavigate?.("asistencia")}><CalendarCheck /> Ver asistencias</Button>
                         <Button variant="outline" onClick={() => onNavigate?.("cuota")}><CircleDollarSign /> Ver cuotas</Button>
-                        {payload.canManage ? <Button variant="destructive" onClick={() => setBajaOpen(true)}><UserMinus /> Dar de baja</Button> : null}
+                        {payload.canManage ? <Button variant="destructive" onClick={() => prepareSingleBaja(selectedMember)}><UserMinus /> Dar de baja</Button> : null}
                       </div>
                     </section>
                   </div>
@@ -970,7 +1023,15 @@ export function IntegrantesManager({
                 <tbody>
                   {rows.map((row) => (
                     <tr key={row.id} className={selected === row.rowNumber ? "selected" : ""} onClick={() => setSelected(row.rowNumber)} onDoubleClick={() => { if (payload.canEdit) openEdit(row); }}>
-                      <td className="select-column"><input type="radio" name="selected-member" checked={selected === row.rowNumber} onChange={() => setSelected(row.rowNumber)} aria-label={`Seleccionar ${String(row.values[NAME] ?? "integrante")}`} /></td>
+                      <td className="select-column">
+                        <input
+                          type="checkbox"
+                          checked={selectedRows.includes(row.rowNumber)}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={() => toggleSelectedRow(row.rowNumber)}
+                          aria-label={`Seleccionar ${String(row.values[NAME] ?? "integrante")} para baja`}
+                        />
+                      </td>
                       {visibleHeaders.map((header) => <td key={header} title={String(row.values[header] ?? "")}>{header === AGE ? `${row.age ?? "—"} · ${row.ageStatus}` : String(row.values[header] ?? "") || "—"}</td>)}
                     </tr>
                   ))}
@@ -987,7 +1048,18 @@ export function IntegrantesManager({
 
       <Dialog open={bajaOpen} onOpenChange={setBajaOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Dar de baja a {String(selectedMember?.values[NAME] ?? "este integrante")}</DialogTitle><DialogDescription>La fila se moverá a la hoja Baja y el acceso del email-puente quedará desactivado.</DialogDescription></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Dar de baja {selectedRows.length > 1 ? `a ${selectedRows.length} integrantes` : `a ${String(selectedMembers[0]?.values[NAME] ?? selectedMember?.values[NAME] ?? "este integrante")}`}</DialogTitle>
+            <DialogDescription>
+              Se conservarán todos los datos en la hoja Baja Integrantes, comenzando por la fecha de baja. Los registros se quitarán del padrón activo y se desactivará el acceso de las cuentas que tengan email-puente.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedMembers.length > 1 ? (
+            <div className="member-baja-selection">
+              {selectedMembers.slice(0, 8).map((member) => <span key={member.id}>{String(member.values[NAME] ?? "Sin nombre")}</span>)}
+              {selectedMembers.length > 8 ? <small>y {selectedMembers.length - 8} más…</small> : null}
+            </div>
+          ) : null}
           <label className="member-field"><span>Motivo de la baja</span><textarea rows={4} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Escribí el motivo…" /></label>
           <DialogFooter><Button variant="outline" onClick={() => setBajaOpen(false)}>Cancelar</Button><Button variant="destructive" disabled={savingBaja || !reason.trim()} onClick={() => void confirmBaja()}>{savingBaja ? <LoaderCircle className="spin" /> : <UserMinus />} Confirmar baja</Button></DialogFooter>
         </DialogContent>
