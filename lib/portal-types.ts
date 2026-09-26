@@ -47,6 +47,17 @@ export type MemberRecord = {
   ageStatus: "Mayor de edad" | "Menor de edad" | "Sin fecha";
 };
 
+export type HistoricalMemberRecord = {
+  id: string;
+  rowNumber: number;
+  bajaDate: string;
+  reason: string;
+  deactivatedBy: string;
+  values: Record<string, MemberFieldValue>;
+  age: number | null;
+  ageStatus: "Mayor de edad" | "Menor de edad" | "Sin fecha";
+};
+
 export type NewMemberRequestStatus = "invitation" | "expired" | "pending" | "approved" | "rejected" | "incorporated";
 
 export type NewMemberRequest = {

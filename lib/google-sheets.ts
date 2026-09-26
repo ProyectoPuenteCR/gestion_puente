@@ -11,6 +11,7 @@ import type {
   ConfigCategory,
   ConfigItem,
   Integrante,
+  HistoricalMemberRecord,
   MemberFieldValue,
   MemberRecord,
   NewMemberRequest,
@@ -730,7 +731,7 @@ function recordArray(record: Record<MemberHeader, MemberFieldValue>) {
 }
 
 function requireWriteSheets(ids: Record<string, number>) {
-  for (const title of ["Integrantes", "Configuracion", "Usuarios", "Baja", "LOG"]) {
+  for (const title of ["Integrantes", "Configuracion", "Usuarios", "LOG"]) {
     if (typeof ids[title] !== "number") throw new Error(`Falta la hoja ${title}.`);
   }
 }
@@ -930,42 +931,187 @@ export async function importMembers(
   return { created, updated, skipped };
 }
 
-export async function deactivateMember(
-  rowNumber: number, reason: string, actor: { email: string; role: UserRole },
-) {
-  const state = await managementState();
-  const member = state.members.find((item) => item.rowNumber === rowNumber);
-  if (!member) throw new Error("El integrante ya no existe o cambió de fila.");
-  const ids = await sheetIds();
-  requireWriteSheets(ids);
-  const memberEmail = normalizeEmail(String(member.values[MEMBER_EMAIL_HEADER] ?? ""));
-  const memberName = cellText(member.values[MEMBER_NAME_HEADER]);
-  const account = state.accounts.find((item) => item.email === memberEmail);
-  const bajaValues = [
-    ...recordArray(member.values as Record<MemberHeader, MemberFieldValue>),
-    new Date().toISOString(), reason.trim(), actor.email,
-  ];
-  const requests: Array<Record<string, unknown>> = [
-    { appendCells: {
-      sheetId: ids.Baja,
-      rows: [{ values: bajaValues.map((value, index) => cellData(value, [0, 1, 23, 28].includes(index))) }],
-      fields: "userEnteredValue",
-    } },
-    { deleteDimension: { range: { sheetId: ids.Integrantes, dimension: "ROWS", startIndex: rowNumber - 1, endIndex: rowNumber } } },
-    { appendCells: {
-      sheetId: ids.LOG, rows: [logRow(actor, "BAJA", memberEmail, memberName, "Motivo", "", reason.trim())], fields: "userEnteredValue",
-    } },
-  ];
-  if (account) {
-    requests.push({ updateCells: {
-      range: { sheetId: ids.Usuarios, startRowIndex: account.rowNumber - 1, endRowIndex: account.rowNumber, startColumnIndex: 3, endColumnIndex: 6 },
-      rows: [{ values: [false, new Date().toISOString(), actor.email].map((value) => cellData(value)) }],
-      fields: "userEnteredValue",
-    } });
+const HISTORICAL_MEMBERS_SHEET = "Baja Integrantes";
+const HISTORICAL_MEMBER_HEADERS = [
+  "Fecha de Baja",
+  "Motivo de Baja",
+  "Dado de baja por",
+  ...MEMBER_HEADERS,
+] as const;
+const HISTORICAL_MEMBERS_RANGE = "'" + HISTORICAL_MEMBERS_SHEET + "'!A1:AH5000";
+
+async function ensureHistoricalMembersSheet() {
+  let ids = await sheetIds();
+  if (typeof ids[HISTORICAL_MEMBERS_SHEET] !== "number") {
+    await writeRequests([{
+      addSheet: {
+        properties: {
+          title: HISTORICAL_MEMBERS_SHEET,
+          gridProperties: {
+            rowCount: 5000,
+            columnCount: HISTORICAL_MEMBER_HEADERS.length,
+            frozenRowCount: 1,
+          },
+        },
+      },
+    }]);
+    globalGoogleCache.__proyectoPuenteSheetIds = undefined;
+    ids = await sheetIds();
   }
-  await writeRequests(requests);
+
+  const sheetId = ids[HISTORICAL_MEMBERS_SHEET];
+  if (typeof sheetId !== "number") throw new Error("No se pudo crear la hoja Baja Integrantes.");
+
+  await writeRequests([
+    {
+      updateSheetProperties: {
+        properties: {
+          sheetId,
+          gridProperties: { columnCount: HISTORICAL_MEMBER_HEADERS.length },
+        },
+        fields: "gridProperties.columnCount",
+      },
+    },
+    {
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: HISTORICAL_MEMBER_HEADERS.length,
+        },
+        rows: [{ values: HISTORICAL_MEMBER_HEADERS.map((value) => cellData(value)) }],
+        fields: "userEnteredValue",
+      },
+    },
+  ]);
+
+  return sheetId;
 }
 
+function historicalMemberRecord(row: SheetValue[], index: number): HistoricalMemberRecord | null {
+  const bajaDate = cellText(row[0]);
+  const valuesArray = row.slice(3, 3 + MEMBER_HEADERS.length);
+  const base = memberRecord(valuesArray, index);
+  if (!base) return null;
+  return {
+    ...base,
+    id: `baja-${index + 2}-${base.id}`,
+    rowNumber: index + 2,
+    bajaDate,
+    reason: cellText(row[1]),
+    deactivatedBy: normalizeEmail(cellText(row[2])) || cellText(row[2]),
+  };
+}
+
+export async function readHistoricalMembers() {
+  await ensureHistoricalMembersSheet();
+  const payload = await readRanges([HISTORICAL_MEMBERS_RANGE]);
+  const rows = payload.valueRanges?.[0]?.values ?? [];
+  return rows
+    .slice(1)
+    .flatMap((row, index) => historicalMemberRecord(row, index) ?? [])
+    .sort((a, b) => b.bajaDate.localeCompare(a.bajaDate));
+}
+
+export async function deactivateMembers(
+  rowNumbers: number[],
+  reason: string,
+  actor: { email: string; role: UserRole },
+) {
+  const uniqueRows = [...new Set(rowNumbers)]
+    .filter((rowNumber) => Number.isInteger(rowNumber) && rowNumber >= 2)
+    .sort((a, b) => b - a);
+  if (!uniqueRows.length) throw new Error("Seleccioná al menos un integrante.");
+  if (uniqueRows.length > 100) throw new Error("Podés dar de baja hasta 100 integrantes por operación.");
+
+  const cleanReason = reason.replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (!cleanReason) throw new Error("Indicá el motivo de la baja.");
+
+  const state = await managementState();
+  const selected = uniqueRows.map((rowNumber) => {
+    const member = state.members.find((item) => item.rowNumber === rowNumber);
+    if (!member) throw new Error(`El integrante de la fila ${rowNumber} ya no existe o cambió de fila.`);
+    return member;
+  });
+
+  const ids = await sheetIds();
+  requireWriteSheets(ids);
+  const historicalSheetId = await ensureHistoricalMembersSheet();
+  const now = new Date().toISOString();
+
+  const historicalRows = selected.map((member) => ({
+    values: [
+      cellData(now),
+      cellData(cleanReason),
+      cellData(actor.email),
+      ...memberCells(recordArray(member.values as Record<MemberHeader, MemberFieldValue>)),
+    ],
+  }));
+
+  const requests: Array<Record<string, unknown>> = [
+    {
+      appendCells: {
+        sheetId: historicalSheetId,
+        rows: historicalRows,
+        fields: "userEnteredValue",
+      },
+    },
+  ];
+
+  for (const member of selected) {
+    const memberEmail = normalizeEmail(String(member.values[MEMBER_EMAIL_HEADER] ?? ""));
+    const memberName = cellText(member.values[MEMBER_NAME_HEADER]);
+    const account = state.accounts.find((item) => item.email === memberEmail);
+
+    requests.push({
+      deleteDimension: {
+        range: {
+          sheetId: ids.Integrantes,
+          dimension: "ROWS",
+          startIndex: member.rowNumber - 1,
+          endIndex: member.rowNumber,
+        },
+      },
+    });
+
+    requests.push({
+      appendCells: {
+        sheetId: ids.LOG,
+        rows: [logRow(actor, "BAJA", memberEmail, memberName, "Motivo", "", cleanReason)],
+        fields: "userEnteredValue",
+      },
+    });
+
+    if (account) {
+      requests.push({
+        updateCells: {
+          range: {
+            sheetId: ids.Usuarios,
+            startRowIndex: account.rowNumber - 1,
+            endRowIndex: account.rowNumber,
+            startColumnIndex: 3,
+            endColumnIndex: 6,
+          },
+          rows: [{ values: [false, now, actor.email].map((value) => cellData(value)) }],
+          fields: "userEnteredValue",
+        },
+      });
+    }
+  }
+
+  await writeRequests(requests);
+  return { count: selected.length };
+}
+
+export async function deactivateMember(
+  rowNumber: number,
+  reason: string,
+  actor: { email: string; role: UserRole },
+) {
+  return deactivateMembers([rowNumber], reason, actor);
+}
 export async function updatePlatformAccount(
   emailValue: string, role: UserRole, active: boolean, actor: { email: string; role: UserRole },
 ) {

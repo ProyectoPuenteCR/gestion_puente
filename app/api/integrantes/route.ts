@@ -1,7 +1,7 @@
 import {
   createMember,
   canUsersEditOwnProfile,
-  deactivateMember,
+  deactivateMembers,
   MEMBER_EMAIL_HEADER,
   MEMBER_HEADERS,
   readManagementSnapshot,
@@ -80,13 +80,16 @@ export async function DELETE(request: Request) {
   try {
     const access = await currentPortalAccess();
     requireAdmin(access);
-    const body = (await request.json()) as { rowNumber?: unknown; reason?: unknown };
-    const rowNumber = Number(body.rowNumber);
+    const body = (await request.json()) as { rowNumber?: unknown; rowNumbers?: unknown; reason?: unknown };
+    const rawRows = Array.isArray(body.rowNumbers) ? body.rowNumbers : [body.rowNumber];
+    const rowNumbers = rawRows.map((value) => Number(value));
+    if (!rowNumbers.length || rowNumbers.some((value) => !Number.isInteger(value) || value < 2)) {
+      throw new Error("La selección de integrantes no es válida.");
+    }
     const reason = String(body.reason ?? "").trim();
-    if (!Number.isInteger(rowNumber) || rowNumber < 2) throw new Error("La fila seleccionada no es válida.");
     if (!reason) throw new Error("Indicá el motivo de la baja.");
-    await deactivateMember(rowNumber, reason, access);
-    return Response.json({ ok: true });
+    const result = await deactivateMembers(rowNumbers, reason, access);
+    return Response.json({ ok: true, count: result.count });
   } catch (error) {
     return apiError(error);
   }
