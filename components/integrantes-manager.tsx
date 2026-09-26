@@ -932,7 +932,24 @@ export function IntegrantesManager({
                             </div>
                           </td>
                           <td>{String(row.values[ADDRESS] ?? "") || "—"}</td>
-                          <td><Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); setSelected(row.rowNumber); }} aria-label={`Acciones de ${name}`}><MoreHorizontal /></Button></td>
+                          <td>
+                            {payload.canManage ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="member-row-baja"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  prepareSingleBaja(row);
+                                }}
+                                aria-label={`Dar de baja a ${name}`}
+                              >
+                                <UserMinus /> Baja
+                              </Button>
+                            ) : (
+                              <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); setSelected(row.rowNumber); }} aria-label={`Ver ${name}`}><MoreHorizontal /></Button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
@@ -942,7 +959,18 @@ export function IntegrantesManager({
               </div>
 
               <footer className="member-table-footer">
-                <strong>{rows.length} integrantes {selectedRows.length ? `· ${selectedRows.length} seleccionado${selectedRows.length === 1 ? "" : "s"} para baja` : ""}</strong>
+                <div className="member-table-footer-summary">
+                  <strong>{rows.length} integrantes {selectedRows.length ? `· ${selectedRows.length} seleccionado${selectedRows.length === 1 ? "" : "s"} para baja` : ""}</strong>
+                  {payload.canManage && selectedRows.length ? (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => { setReason(""); setBajaOpen(true); }}
+                    >
+                      <UserMinus /> Dar de baja ({selectedRows.length})
+                    </Button>
+                  ) : null}
+                </div>
                 <div className="member-pagination">
                   <Button variant="outline" size="icon" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft /></Button>
                   {Array.from({ length: Math.min(5, maxPage) }, (_, index) => {

@@ -1332,3 +1332,12 @@ button.member-kpi:hover { transform: translateY(-1px); border-color: #c9d6e5; bo
   .new-member-detail-field.wide { grid-column: auto; }
 }
 
+/* Acceso visible a la baja de integrantes */
+.member-row-baja { min-height: 28px !important; height: 28px !important; padding-inline: 8px !important; border-color: #efc7c4 !important; color: #b6403a !important; font-size: 9px !important; }
+.member-row-baja:hover { border-color: #e8948e !important; background: #fff0ee !important; color: #9e332e !important; }
+.member-row-baja svg { width: 13px !important; height: 13px !important; }
+.member-table-footer-summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.member-table-footer-summary > button { min-height: 30px; height: 30px; font-size: 9px; }
+.dark .member-row-baja { border-color: #613a3c !important; color: #f0a19c !important; background: transparent !important; }
+.dark .member-row-baja:hover { border-color: #815053 !important; background: #351f22 !important; color: #ffc0bb !important; }
+
