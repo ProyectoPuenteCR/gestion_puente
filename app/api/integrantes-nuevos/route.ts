@@ -4,6 +4,7 @@ import {
   incorporateApprovedNewMember,
   readNewMemberRequests,
   rejectNewMemberRequest,
+  syncApprovedNewMemberRequests,
 } from "@/lib/google-sheets";
 import { apiError, currentPortalAccess, requireAdmin } from "@/lib/server-access";
 
@@ -13,8 +14,9 @@ export async function GET() {
   try {
     const access = await currentPortalAccess();
     requireAdmin(access);
+    const rosterSynced = await syncApprovedNewMemberRequests(access);
     return Response.json(
-      { requests: await readNewMemberRequests() },
+      { requests: await readNewMemberRequests(), rosterSynced },
       { headers: { "Cache-Control": "private, no-store" } },
     );
   } catch (error) {

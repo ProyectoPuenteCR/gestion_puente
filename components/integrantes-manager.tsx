@@ -223,7 +223,7 @@ function Field({
         type={inputType}
         value={stringValue}
         disabled={disabled}
-        required={header === NAME || header === EMAIL}
+        required={header === NAME || (header === EMAIL && Boolean(stringValue))}
         min={header === ENTRY_YEAR ? 2000 : undefined}
         max={header === ENTRY_YEAR ? new Date().getFullYear() + 1 : undefined}
         onChange={(event) => onChange(event.target.value)}

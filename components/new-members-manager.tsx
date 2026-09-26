@@ -170,13 +170,15 @@ export function NewMembersManager({
       const response = await fetch("/api/integrantes-nuevos", { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(messageOf(body));
-      setRequests((body as { requests: NewMemberRequest[] }).requests);
+      const result = body as { requests: NewMemberRequest[]; rosterSynced?: number };
+      setRequests(result.requests);
+      if ((result.rosterSynced ?? 0) > 0) onMemberIncorporated();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudieron cargar las solicitudes.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onMemberIncorporated]);
 
   useEffect(() => {
     void load();
@@ -251,7 +253,10 @@ export function NewMembersManager({
   async function approve() {
     if (!selected) return;
     const result = await action({ action: "approve", id: selected.id });
-    if (result) setNotice("Solicitud aprobada. Quedó pendiente la creación del email-puente.");
+    if (result) {
+      setNotice("Solicitud aprobada. El integrante ya fue agregado al padrón de Integrantes; queda pendiente crear y asignar el email-puente.");
+      onMemberIncorporated();
+    }
   }
 
   async function reject() {
@@ -271,7 +276,7 @@ export function NewMembersManager({
     }
     const result = await action({ action: "incorporate", id: selected.id, email });
     if (result) {
-      setNotice("Integrante incorporado al padrón y habilitado para usar la plataforma.");
+      setNotice("Email-puente asignado. El integrante ya estaba en el padrón y ahora quedó habilitado para usar la plataforma.");
       onMemberIncorporated();
     }
   }
@@ -452,8 +457,8 @@ export function NewMembersManager({
                           <span>Email-puente ya creado</span>
                           <Input type="email" value={emailDraft} onChange={(event) => setEmailDraft(event.target.value)} placeholder="nombre.apellido@proyecto-puente.org" />
                         </label>
-                        <Button onClick={() => void incorporate()} disabled={working || !emailDraft.trim()}><MailPlus /> Asignar email e incorporar</Button>
-                        <small>Recién en este paso la ficha pasa a Integrantes y se habilita el acceso.</small>
+                        <Button onClick={() => void incorporate()} disabled={working || !emailDraft.trim()}><MailPlus /> Asignar email y habilitar acceso</Button>
+                        <small>La ficha ya está en Integrantes desde la aprobación. Este paso sólo vincula el email institucional y habilita el acceso a la plataforma.</small>
                       </section>
                     ) : null}
 

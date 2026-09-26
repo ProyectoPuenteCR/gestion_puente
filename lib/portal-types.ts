@@ -74,6 +74,7 @@ export type NewMemberRequest = {
   emailPuente: string;
   incorporatedAt: string;
   incorporatedBy: string;
+  memberRowNumber: number | null;
   values: Record<string, MemberFieldValue>;
 };
 

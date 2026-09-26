@@ -809,14 +809,15 @@ export async function updateMember(
   requireWriteSheets(ids);
   const memberEmail = normalizeEmail(String(record[MEMBER_EMAIL_HEADER] ?? ""));
   const memberName = cellText(record[MEMBER_NAME_HEADER]);
-  if (!memberEmail || !memberName) throw new Error("Nombre y email-puente son obligatorios.");
-  requireInstitutionalEmail(memberEmail);
   const previousEmail = normalizeEmail(String(member.values[MEMBER_EMAIL_HEADER] ?? ""));
-  if (memberEmail !== previousEmail && state.members.some((item) => item.rowNumber !== rowNumber && normalizeEmail(String(item.values[MEMBER_EMAIL_HEADER] ?? "")) === memberEmail)) {
+  if (!memberName) throw new Error("El nombre del integrante es obligatorio.");
+  if (previousEmail && !memberEmail) throw new Error("No se puede quitar un email-puente ya asignado. Podés cambiarlo por otro email institucional.");
+  if (memberEmail) requireInstitutionalEmail(memberEmail);
+  if (memberEmail && memberEmail !== previousEmail && state.members.some((item) => item.rowNumber !== rowNumber && normalizeEmail(String(item.values[MEMBER_EMAIL_HEADER] ?? "")) === memberEmail)) {
     throw new Error("Ya existe otro integrante con ese email-puente.");
   }
-  const account = state.accounts.find((item) => item.email === previousEmail);
-  if (memberEmail !== previousEmail && state.accounts.some((item) => item.email === memberEmail && item.rowNumber !== account?.rowNumber)) {
+  const account = previousEmail ? state.accounts.find((item) => item.email === previousEmail) : undefined;
+  if (memberEmail && memberEmail !== previousEmail && state.accounts.some((item) => item.email === memberEmail && item.rowNumber !== account?.rowNumber)) {
     throw new Error("Ese email-puente ya está asignado a otra cuenta de la plataforma.");
   }
   const requests: Array<Record<string, unknown>> = [
@@ -834,7 +835,7 @@ export async function updateMember(
       fields: "userEnteredValue",
     } },
   ];
-  if (memberEmail !== previousEmail || memberName !== cellText(member.values[MEMBER_NAME_HEADER])) {
+  if (memberEmail && (memberEmail !== previousEmail || memberName !== cellText(member.values[MEMBER_NAME_HEADER]))) {
     if (account) {
       requests.push({ updateCells: {
         range: { sheetId: ids.Usuarios, startRowIndex: account.rowNumber - 1, endRowIndex: account.rowNumber, startColumnIndex: 0, endColumnIndex: 6 },
@@ -2299,8 +2300,9 @@ const NEW_MEMBER_META_HEADERS = [
   "IncorporadoPor",
 ] as const;
 const NEW_MEMBER_META_COUNT = NEW_MEMBER_META_HEADERS.length;
-const NEW_MEMBER_ALL_HEADERS = [...NEW_MEMBER_META_HEADERS, ...MEMBER_HEADERS];
-const NEW_MEMBER_RANGE = "'" + NEW_MEMBERS_SHEET + "'!A1:AR5000";
+const NEW_MEMBER_LINK_HEADER = "FilaIntegrantes";
+const NEW_MEMBER_ALL_HEADERS = [...NEW_MEMBER_META_HEADERS, ...MEMBER_HEADERS, NEW_MEMBER_LINK_HEADER];
+const NEW_MEMBER_RANGE = "'" + NEW_MEMBERS_SHEET + "'!A1:AS5000";
 const NEW_MEMBER_PUBLIC_EXCLUDED = new Set<MemberHeader>([
   "Numero de orden",
   "Numero de Matricula",
@@ -2400,6 +2402,7 @@ function newMemberRequestFromRow(row: SheetValue[], index: number): NewMemberReq
     emailPuente: normalizeEmail(cellText(row[10])),
     incorporatedAt: cellText(row[11]),
     incorporatedBy: normalizeEmail(cellText(row[12])) || cellText(row[12]),
+    memberRowNumber: Number(row[NEW_MEMBER_META_COUNT + MEMBER_HEADERS.length]) || null,
     values,
   };
 }
@@ -2459,6 +2462,7 @@ function requestRowValues(request: {
   emailPuente: string;
   incorporatedAt: string;
   incorporatedBy: string;
+  memberRowNumber?: number | null;
   values: Record<string, MemberFieldValue>;
 }) {
   return [
@@ -2476,6 +2480,7 @@ function requestRowValues(request: {
     request.incorporatedAt,
     request.incorporatedBy,
     ...MEMBER_HEADERS.map((header) => request.values[header] ?? ""),
+    request.memberRowNumber ?? "",
   ];
 }
 
@@ -2622,6 +2627,7 @@ async function updateNewMemberRequest(
     emailPuente: string;
     incorporatedAt: string;
     incorporatedBy: string;
+    memberRowNumber: number | null;
   }>,
 ) {
   const { sheetId, rawRows } = await newMembersState();
@@ -2641,6 +2647,7 @@ async function updateNewMemberRequest(
     emailPuente: patch.emailPuente ?? request.emailPuente,
     incorporatedAt: patch.incorporatedAt ?? request.incorporatedAt,
     incorporatedBy: patch.incorporatedBy ?? request.incorporatedBy,
+    memberRowNumber: patch.memberRowNumber ?? request.memberRowNumber,
     values: request.values,
   });
   await writeRequests([{
@@ -2658,30 +2665,123 @@ async function updateNewMemberRequest(
   }]);
 }
 
+function sameRequestMember(member: MemberRecord, request: NewMemberRequest) {
+  const requestDni = normalizedDni(request.values["DNI"]);
+  const memberDni = normalizedDni(member.values["DNI"]);
+  if (requestDni && memberDni) return requestDni === memberDni;
+
+  const requestName = normalizeHeader(request.values[MEMBER_NAME_HEADER]);
+  const memberName = normalizeHeader(member.values[MEMBER_NAME_HEADER]);
+  const requestPhone = String(request.values["CELULAR"] ?? "").replace(/\D/g, "");
+  const memberPhone = String(member.values["CELULAR"] ?? "").replace(/\D/g, "");
+  return Boolean(requestName && requestPhone && requestName === memberName && requestPhone === memberPhone);
+}
+
+async function ensureApprovedRequestInRoster(
+  request: NewMemberRequest,
+  actor: { email: string; role: UserRole },
+) {
+  const state = await managementState();
+
+  const linked = request.memberRowNumber
+    ? state.members.find((member) => member.rowNumber === request.memberRowNumber && sameRequestMember(member, request))
+    : undefined;
+  if (linked) return linked;
+
+  const existing = state.members.find((member) => sameRequestMember(member, request));
+  if (existing) return existing;
+
+  const name = cellText(request.values[MEMBER_NAME_HEADER]);
+  if (!name) throw new Error("La solicitud no tiene nombre y apellido.");
+
+  const record = normalizeMemberValues({
+    ...request.values,
+    [MEMBER_EMAIL_HEADER]: "",
+  });
+  record[MEMBER_EMAIL_HEADER] = "";
+  record["Numero de orden"] = String(Math.max(0, ...state.members.map((item) => Number(item.values["Numero de orden"]) || 0)) + 1);
+  record["Numero de Matricula"] = String(Math.max(0, ...state.members.map((item) => Number(item.values["Numero de Matricula"]) || 0)) + 1);
+  if (!record["Año de ingreso al Proyecto"]) record["Año de ingreso al Proyecto"] = String(new Date().getFullYear());
+
+  const ids = await sheetIds();
+  requireWriteSheets(ids);
+  const targetRowIndex = Math.max(1, state.rawMembers.length);
+  await writeRequests([
+    {
+      copyPaste: {
+        source: { sheetId: ids.Integrantes, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: MEMBER_HEADERS.length },
+        destination: { sheetId: ids.Integrantes, startRowIndex: targetRowIndex, endRowIndex: targetRowIndex + 1, startColumnIndex: 0, endColumnIndex: MEMBER_HEADERS.length },
+        pasteType: "PASTE_FORMAT",
+        pasteOrientation: "NORMAL",
+      },
+    },
+    {
+      updateCells: {
+        range: {
+          sheetId: ids.Integrantes,
+          startRowIndex: targetRowIndex,
+          endRowIndex: targetRowIndex + 1,
+          startColumnIndex: 0,
+          endColumnIndex: MEMBER_HEADERS.length,
+        },
+        rows: [{ values: memberCells(recordArray(record)) }],
+        fields: "userEnteredValue",
+      },
+    },
+    {
+      appendCells: {
+        sheetId: ids.LOG,
+        rows: [logRow(actor, "ALTA_APROBADA_SIN_ACCESO", "", name, "Integrante", "", "Aprobado y agregado al padrón; email-puente pendiente")],
+        fields: "userEnteredValue",
+      },
+    },
+  ]);
+
+  const created = memberRecord(recordArray(record), targetRowIndex - 1);
+  if (!created) throw new Error("No se pudo crear el integrante aprobado.");
+  return created;
+}
+
+export async function syncApprovedNewMemberRequests(actor: { email: string; role: UserRole }) {
+  const requests = await readNewMemberRequests();
+  let synced = 0;
+  for (const request of requests) {
+    if (request.status !== "approved" || request.memberRowNumber) continue;
+    const member = await ensureApprovedRequestInRoster(request, actor);
+    await updateNewMemberRequest(request, { memberRowNumber: member.rowNumber });
+    synced += 1;
+  }
+  return synced;
+}
+
 export async function approveNewMemberRequest(idValue: string, actor: { email: string; role: UserRole }) {
   const id = idValue.trim();
   const requests = await readNewMemberRequests();
   const request = requests.find((item) => item.id === id);
   if (!request) throw new Error("La solicitud no existe.");
   if (request.status !== "pending") throw new Error("Sólo se pueden aprobar solicitudes pendientes.");
+
+  const member = await ensureApprovedRequestInRoster(request, actor);
   const now = new Date().toISOString();
   await updateNewMemberRequest(request, {
     status: "approved",
     reviewedAt: now,
     reviewedBy: actor.email,
     rejectionReason: "",
+    memberRowNumber: member.rowNumber,
   });
+
   const ids = await sheetIds();
   if (typeof ids.LOG === "number") {
     await writeRequests([{
       appendCells: {
         sheetId: ids.LOG,
-        rows: [logRow(actor, "SOLICITUD_INGRESO_APROBADA", "", cellText(request.values[MEMBER_NAME_HEADER]), "Ingreso", "Pendiente", "Aprobado pendiente de email")],
+        rows: [logRow(actor, "SOLICITUD_INGRESO_APROBADA", "", cellText(request.values[MEMBER_NAME_HEADER]), "Ingreso", "Pendiente", "Aprobado y agregado a Integrantes; email pendiente")],
         fields: "userEnteredValue",
       },
     }]);
   }
-  return { ok: true };
+  return { ok: true, memberRowNumber: member.rowNumber };
 }
 
 export async function rejectNewMemberRequest(idValue: string, reasonValue: string, actor: { email: string; role: UserRole }) {
@@ -2691,8 +2791,8 @@ export async function rejectNewMemberRequest(idValue: string, reasonValue: strin
   const requests = await readNewMemberRequests();
   const request = requests.find((item) => item.id === id);
   if (!request) throw new Error("La solicitud no existe.");
-  if (request.status !== "pending" && request.status !== "approved") {
-    throw new Error("La solicitud ya no puede rechazarse.");
+  if (request.status !== "pending") {
+    throw new Error("Sólo se pueden rechazar solicitudes pendientes.");
   }
   const now = new Date().toISOString();
   await updateNewMemberRequest(request, {
@@ -2727,10 +2827,15 @@ export async function incorporateApprovedNewMember(
   if (!request) throw new Error("La solicitud no existe.");
   if (request.status !== "approved") throw new Error("Primero tenés que aprobar la solicitud.");
 
-  const member = await createMember({
-    ...request.values,
-    [MEMBER_EMAIL_HEADER]: email,
-  }, actor);
+  const rosterMember = await ensureApprovedRequestInRoster(request, actor);
+  const member = await updateMember(
+    rosterMember.rowNumber,
+    {
+      ...rosterMember.values,
+      [MEMBER_EMAIL_HEADER]: email,
+    },
+    actor,
+  );
 
   const now = new Date().toISOString();
   await updateNewMemberRequest(request, {
@@ -2738,6 +2843,7 @@ export async function incorporateApprovedNewMember(
     emailPuente: email,
     incorporatedAt: now,
     incorporatedBy: actor.email,
+    memberRowNumber: member?.rowNumber ?? rosterMember.rowNumber,
   });
   return { member, email };
 }
