@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   Activity,
+  Archive,
   Bell,
   BookOpenCheck,
   CakeSlice,
@@ -47,6 +48,7 @@ import { AttendanceCalendar } from "@/components/attendance-calendar";
 import { BirthdaysView } from "@/components/birthdays-view";
 import { Input } from "@/components/ui/input";
 import { IntegrantesManager } from "@/components/integrantes-manager";
+import { HistoricalMembersManager } from "@/components/historical-members-manager";
 import { ScoringMatrix } from "@/components/scoring-matrix";
 import { PerformanceView } from "@/components/performance-view";
 import { SocialFeeManager } from "@/components/social-fee-manager";
@@ -76,12 +78,13 @@ import type { Integrante, PortalData, PortalUser } from "@/lib/portal-types";
 import { UserAdminManager } from "@/components/user-admin-manager";
 import { ThemeToggle } from "@/components/theme-toggle";
 
-type ViewId = "inicio" | "convivencia" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "habilidades" | "desempenos" | "reportes" | "configuracion" | "administracion";
+type ViewId = "inicio" | "convivencia" | "integrantes" | "integrantes_historicos" | "asistencia" | "cumpleanios" | "cuota" | "habilidades" | "desempenos" | "reportes" | "configuracion" | "administracion";
 
 const navigation: Array<{ id: ViewId; label: string; icon: typeof Home }> = [
   { id: "inicio", label: "Inicio", icon: Home },
   { id: "convivencia", label: "Código de Convivencia", icon: FileText },
   { id: "integrantes", label: "Integrantes", icon: UsersRound },
+  { id: "integrantes_historicos", label: "Integrantes históricos", icon: Archive },
   { id: "asistencia", label: "Asistencia", icon: BookOpenCheck },
   { id: "cumpleanios", label: "Cumpleaños", icon: CakeSlice },
   { id: "cuota", label: "Cuota", icon: CircleDollarSign },
@@ -450,7 +453,7 @@ export function PortalShell({
         <header className="topbar">
           <div className="topbar-title"><SidebarTrigger className="sidebar-trigger"><Menu /></SidebarTrigger><div><p>Panel de gestión</p><h1>{title}</h1></div></div>
           <div className="topbar-actions">
-            {view !== "convivencia" && view !== "integrantes" && view !== "configuracion" && view !== "administracion" && view !== "desempenos" && view !== "cuota" && view !== "habilidades" ? <label className="search-box"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar integrante…" aria-label="Buscar integrante" /></label> : null}
+            {view !== "convivencia" && view !== "integrantes" && view !== "integrantes_historicos" && view !== "configuracion" && view !== "administracion" && view !== "desempenos" && view !== "cuota" && view !== "habilidades" ? <label className="search-box"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar integrante…" aria-label="Buscar integrante" /></label> : null}
             <ThemeToggle />
             <Button variant="outline" size="icon" onClick={refresh} aria-label="Actualizar datos"><RefreshCw className={refreshing ? "spin" : ""} /></Button>
             <button className="notification-button" aria-label="Notificaciones"><Bell /><span>2</span></button>
@@ -475,6 +478,7 @@ export function PortalShell({
           {view === "inicio" ? <DashboardView data={data} integrantes={filteredMembers} onNavigate={setView} /> : null}
           {view === "convivencia" ? <CodeOfConductView user={user} locked={conductAcceptanceRequired} /> : null}
           {view === "integrantes" ? <IntegrantesManager data={data} onNavigate={(next) => setView(next)} /> : null}
+          {view === "integrantes_historicos" && isAdmin ? <HistoricalMembersManager /> : null}
           {view === "asistencia" ? <AttendanceCalendar rows={filteredAttendance} /> : null}
           {view === "cumpleanios" ? <BirthdaysView items={data.cumpleanios} showPrivateDetails={isAdmin} /> : null}
           {view === "cuota" ? <SocialFeeManager /> : null}
