@@ -118,6 +118,7 @@ export type MemberManagementPayload = {
   headers: string[];
   rows: MemberRecord[];
   config: ConfigItem[];
+  accounts: PlatformAccount[];
   canManage: boolean;
   canEdit: boolean;
   currentEmail: string;

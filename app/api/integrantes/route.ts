@@ -32,6 +32,7 @@ export async function GET() {
       headers: [...MEMBER_HEADERS],
       rows,
       config: snapshot.config,
+      accounts: access.role === "admin" ? snapshot.accounts : [],
       canManage: access.role === "admin",
       canEdit: access.role === "admin" || (access.role === "usuario" && canUsersEditOwnProfile(snapshot.config)),
       currentEmail: access.email,

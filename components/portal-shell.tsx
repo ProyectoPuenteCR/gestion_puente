@@ -474,7 +474,7 @@ export function PortalShell({
         <main className="content-area">
           {view === "inicio" ? <DashboardView data={data} integrantes={filteredMembers} onNavigate={setView} /> : null}
           {view === "convivencia" ? <CodeOfConductView user={user} locked={conductAcceptanceRequired} /> : null}
-          {view === "integrantes" ? <IntegrantesManager data={data} /> : null}
+          {view === "integrantes" ? <IntegrantesManager data={data} onNavigate={(next) => setView(next)} /> : null}
           {view === "asistencia" ? <AttendanceCalendar rows={filteredAttendance} /> : null}
           {view === "cumpleanios" ? <BirthdaysView items={data.cumpleanios} showPrivateDetails={isAdmin} /> : null}
           {view === "cuota" ? <SocialFeeManager /> : null}

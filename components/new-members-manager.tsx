@@ -73,7 +73,13 @@ function whatsappNumber(value: string) {
   return digits;
 }
 
-export function NewMembersManager({ onMemberIncorporated }: { onMemberIncorporated: () => void }) {
+export function NewMembersManager({
+  onMemberIncorporated,
+  onPendingCount,
+}: {
+  onMemberIncorporated: () => void;
+  onPendingCount?: (count: number) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [requests, setRequests] = useState<NewMemberRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -105,6 +111,11 @@ export function NewMembersManager({ onMemberIncorporated }: { onMemberIncorporat
   }, [load]);
 
   const pendingCount = requests.filter((item) => item.status === "pending").length;
+
+  useEffect(() => {
+    onPendingCount?.(pendingCount);
+  }, [onPendingCount, pendingCount]);
+
   const filtered = useMemo(
     () => filter === "all" ? requests : requests.filter((item) => item.status === filter),
     [filter, requests],
@@ -210,9 +221,12 @@ export function NewMembersManager({ onMemberIncorporated }: { onMemberIncorporat
 
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
+      <Button className="member-invite-button" onClick={() => { setOpen(true); setNotice(""); setError(""); }}>
+        <Link2 /> Invitar por enlace
+      </Button>
+      <Button className="member-new-requests-button" onClick={() => setOpen(true)}>
         <UsersRound /> Integrantes nuevos
-        {pendingCount ? <Badge className="ml-1 bg-blue-100 text-blue-800 hover:bg-blue-100">{pendingCount}</Badge> : null}
+        {pendingCount ? <Badge className="ml-1 bg-white/20 text-white hover:bg-white/20">{pendingCount}</Badge> : null}
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
