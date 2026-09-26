@@ -351,7 +351,7 @@ function MemberDialog({
   );
 }
 
-type MemberViewFilter = "all" | "active" | "no-email" | "minor" | "conduct" | "blocked";
+type MemberViewFilter = "all" | "active" | "with-email" | "no-email" | "minor" | "conduct" | "blocked";
 type MemberViewMode = "quick" | "complete";
 type MemberDetailTab = "summary" | "all" | "history";
 type MemberNavigateTarget = "desempenos" | "asistencia" | "cuota";
@@ -564,6 +564,7 @@ export function IntegrantesManager({
       const matchesYear = entryYearFilter === "all" || String(row.values[ENTRY_YEAR] ?? "").trim() === entryYearFilter;
       let matchesFilter = true;
       if (filter === "active") matchesFilter = !isBlocked(row);
+      if (filter === "with-email") matchesFilter = Boolean(email);
       if (filter === "no-email") matchesFilter = !email;
       if (filter === "minor") matchesFilter = row.age !== null && row.age < 18;
       if (filter === "conduct") matchesFilter = conductState(row) !== "accepted";
@@ -676,6 +677,29 @@ export function IntegrantesManager({
     }
   }
 
+  async function openFullReport(member: MemberRecord) {
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setError("El navegador bloqueó la ventana del reporte. Habilitá las ventanas emergentes e intentá nuevamente.");
+      return;
+    }
+    reportWindow.document.write("<p style='font-family:Arial;padding:30px'>Preparando reporte integral…</p>");
+    setError("");
+    try {
+      const email = String(member.values[EMAIL] ?? "");
+      const response = await fetch(`/api/desempenos?email=${encodeURIComponent(email)}`, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(apiMessage(body));
+      const comments = (body as { comments: PerformanceComment[] }).comments;
+      reportWindow.document.open();
+      reportWindow.document.write(memberReportHtml(member, data, comments));
+      reportWindow.document.close();
+    } catch (caught) {
+      reportWindow.close();
+      setError(caught instanceof Error ? caught.message : "No se pudo generar el reporte.");
+    }
+  }
+
   function clearFilters() {
     setSearch("");
     setNameFilter("");
@@ -721,7 +745,7 @@ export function IntegrantesManager({
       {payload.canManage ? (
         <section className="member-kpis" aria-label="Resumen del padrón">
           <button type="button" className="member-kpi" onClick={() => setFilter("all")}><span className="member-kpi-icon tone-blue"><UsersRound /></span><strong>{stats.total}</strong><small>Integrantes totales</small></button>
-          <button type="button" className="member-kpi" onClick={() => { setFilter("active"); setSearch(""); }}><span className="member-kpi-icon tone-green"><CheckCircle2 /></span><strong>{stats.withEmail}</strong><small>Con email Puente</small></button>
+          <button type="button" className="member-kpi" onClick={() => { setFilter("with-email"); setSearch(""); }}><span className="member-kpi-icon tone-green"><CheckCircle2 /></span><strong>{stats.withEmail}</strong><small>Con email Puente</small></button>
           <button type="button" className="member-kpi" onClick={() => setFilter("no-email")}><span className="member-kpi-icon tone-amber"><Mail /></span><strong>{stats.withoutEmail}</strong><small>Sin email</small></button>
           <button type="button" className="member-kpi" onClick={() => setFilter("minor")}><span className="member-kpi-icon tone-purple"><Baby /></span><strong>{stats.minors}</strong><small>Menores</small></button>
           <div className="member-kpi"><span className="member-kpi-icon tone-red"><ClipboardList /></span><strong>{pendingNewCount}</strong><small>Solicitudes nuevas</small></div>
@@ -899,7 +923,7 @@ export function IntegrantesManager({
                       <header><h4><BriefcaseBusiness /> Acciones</h4></header>
                       <div>
                         <Button variant="outline" onClick={() => openEdit(selectedMember)}><Pencil /> Modificar integrante</Button>
-                        <Button variant="outline" onClick={() => { setEditing(selectedMember); setEditorOpen(true); }}><FileDown /> Ver reporte completo</Button>
+                        <Button variant="outline" onClick={() => void openFullReport(selectedMember)}><FileDown /> Ver reporte completo</Button>
                         <Button variant="outline" onClick={() => onNavigate?.("desempenos")}><BarChart3 /> Ver desempeño</Button>
                         <Button variant="outline" onClick={() => onNavigate?.("asistencia")}><CalendarCheck /> Ver asistencias</Button>
                         <Button variant="outline" onClick={() => onNavigate?.("cuota")}><CircleDollarSign /> Ver cuotas</Button>
