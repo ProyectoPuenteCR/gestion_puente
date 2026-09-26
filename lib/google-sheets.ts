@@ -123,10 +123,36 @@ function base64UrlFromText(value: string) {
   return base64UrlFromBytes(new TextEncoder().encode(value));
 }
 
+function normalizePrivateKeyValue(value?: string | null) {
+  let normalized = (value ?? "").trim();
+  if (
+    normalized.length >= 2 &&
+    ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized.replace(/\\n/g, "\n").trim();
+}
+
 function privateKeyPem() {
-  const base64 = process.env.GOOGLE_PRIVATE_KEY_BASE64?.trim();
-  if (base64) return atob(base64);
-  return (process.env.GOOGLE_PRIVATE_KEY ?? "").replace(/\\n/g, "\n").trim();
+  const base64 = normalizePrivateKeyValue(process.env.GOOGLE_PRIVATE_KEY_BASE64);
+  if (base64) {
+    try {
+      const decoded = normalizePrivateKeyValue(atob(base64.replace(/\s/g, "")));
+      if (decoded.includes("-----BEGIN PRIVATE KEY-----") && decoded.includes("-----END PRIVATE KEY-----")) {
+        return decoded;
+      }
+    } catch {
+      // Si la variable Base64 quedó mal copiada en Vercel, usamos GOOGLE_PRIVATE_KEY como respaldo.
+    }
+  }
+
+  const direct = normalizePrivateKeyValue(process.env.GOOGLE_PRIVATE_KEY);
+  if (direct.includes("-----BEGIN PRIVATE KEY-----") && direct.includes("-----END PRIVATE KEY-----")) {
+    return direct;
+  }
+  return direct;
 }
 
 function pemToArrayBuffer(pem: string) {
@@ -179,7 +205,15 @@ export async function getGoogleAccessToken() {
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
     cache: "no-store",
   });
-  if (!response.ok) throw new Error("Google rechazó la autenticación de la cuenta de servicio.");
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null) as { error?: string; error_description?: string } | null;
+    const description = (detail?.error_description || detail?.error || "").replace(/\s+/g, " ").trim().slice(0, 300);
+    throw new Error(
+      description
+        ? "Google rechazó la autenticación de la cuenta de servicio: " + description
+        : "Google rechazó la autenticación de la cuenta de servicio.",
+    );
+  }
   const token = (await response.json()) as { access_token?: string; expires_in?: number };
   if (!token.access_token) throw new Error("Google no devolvió un token de acceso válido.");
   globalGoogleCache.__proyectoPuenteGoogleToken = {
