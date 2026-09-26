@@ -6,6 +6,7 @@ import { CheckCircle2, LoaderCircle, Send, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { ThemeToggle } from "@/components/theme-toggle";
 import type { ConfigItem, MemberFieldValue } from "@/lib/portal-types";
 
 const NAME = "Apellidos y nombres ( Del integrante )";
@@ -216,7 +217,8 @@ export function PublicMemberApplication({ token }: { token: string }) {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 px-4 py-8 md:py-12">
+    <main className="relative min-h-screen bg-slate-100 px-4 py-8 transition-colors dark:bg-slate-950 md:py-12">
+      <ThemeToggle className="fixed right-4 top-4 z-50" />
       <section className="mx-auto max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-200/60">
         <header className="border-b border-slate-200 px-6 py-6 md:px-10">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center">

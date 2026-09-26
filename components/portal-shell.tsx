@@ -74,6 +74,7 @@ import {
 } from "@/components/ui/table";
 import type { Integrante, PortalData, PortalUser } from "@/lib/portal-types";
 import { UserAdminManager } from "@/components/user-admin-manager";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 type ViewId = "inicio" | "convivencia" | "integrantes" | "asistencia" | "cumpleanios" | "cuota" | "habilidades" | "desempenos" | "reportes" | "configuracion" | "administracion";
 
@@ -450,6 +451,7 @@ export function PortalShell({
           <div className="topbar-title"><SidebarTrigger className="sidebar-trigger"><Menu /></SidebarTrigger><div><p>Panel de gestión</p><h1>{title}</h1></div></div>
           <div className="topbar-actions">
             {view !== "convivencia" && view !== "integrantes" && view !== "configuracion" && view !== "administracion" && view !== "desempenos" && view !== "cuota" && view !== "habilidades" ? <label className="search-box"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar integrante…" aria-label="Buscar integrante" /></label> : null}
+            <ThemeToggle />
             <Button variant="outline" size="icon" onClick={refresh} aria-label="Actualizar datos"><RefreshCw className={refreshing ? "spin" : ""} /></Button>
             <button className="notification-button" aria-label="Notificaciones"><Bell /><span>2</span></button>
             <div className="user-chip">

@@ -1,6 +1,7 @@
 import { LockKeyhole, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { signIn } from "@/auth";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 function errorMessage(error?: string) {
   if (error === "AccessDenied") {
@@ -14,6 +15,7 @@ export function LoginForm({ error }: { error?: string }) {
   const message = errorMessage(error);
   return (
     <main className="login-page">
+      <ThemeToggle className="login-theme-toggle" />
       <section className="login-panel" aria-labelledby="login-title">
         <div className="login-brand">
           <Image src="/logo-proyecto-puente.jpg" alt="Proyecto Puente" width={220} height={144} priority />
