@@ -1016,6 +1016,77 @@ export async function readHistoricalMembers() {
     .sort((a, b) => b.bajaDate.localeCompare(a.bajaDate));
 }
 
+
+function sameHistoricalMember(active: MemberRecord, historical: HistoricalMemberRecord) {
+  const activeEmail = normalizeEmail(String(active.values[MEMBER_EMAIL_HEADER] ?? ""));
+  const historicalEmail = normalizeEmail(String(historical.values[MEMBER_EMAIL_HEADER] ?? ""));
+  if (activeEmail && historicalEmail && activeEmail === historicalEmail) return true;
+
+  const activeDni = normalizedDni(active.values["DNI"]);
+  const historicalDni = normalizedDni(historical.values["DNI"]);
+  if (activeDni && historicalDni && activeDni === historicalDni) return true;
+
+  const activeMatricula = cellText(active.values["Numero de Matricula"]);
+  const historicalMatricula = cellText(historical.values["Numero de Matricula"]);
+  if (activeMatricula && historicalMatricula && activeMatricula === historicalMatricula) return true;
+
+  const activeName = normalizeHeader(active.values[MEMBER_NAME_HEADER]);
+  const historicalName = normalizeHeader(historical.values[MEMBER_NAME_HEADER]);
+  const activeStamp = cellText(active.values["Marca temporal"]);
+  const historicalStamp = cellText(historical.values["Marca temporal"]);
+  return Boolean(activeName && activeName === historicalName && activeStamp && historicalStamp && activeStamp === historicalStamp);
+}
+
+function isHistoricalCopyStillActive(active: MemberRecord, historical: HistoricalMemberRecord) {
+  if (!sameHistoricalMember(active, historical)) return false;
+  const activeStamp = Date.parse(cellText(active.values["Marca temporal"]));
+  const bajaStamp = Date.parse(historical.bajaDate);
+  if (Number.isFinite(activeStamp) && Number.isFinite(bajaStamp)) return activeStamp <= bajaStamp;
+  return true;
+}
+
+export async function reconcileHistoricalMembersFromRoster(actor: { email: string; role: UserRole }) {
+  const [state, historical] = await Promise.all([
+    managementState(),
+    readHistoricalMembers(),
+  ]);
+  if (!historical.length || !state.members.length) return 0;
+
+  const staleRows = state.members
+    .filter((member) => historical.some((item) => isHistoricalCopyStillActive(member, item)))
+    .map((member) => member.rowNumber);
+
+  if (!staleRows.length) return 0;
+
+  const ids = await sheetIds();
+  requireWriteSheets(ids);
+  const now = new Date().toISOString();
+  const requests: Array<Record<string, unknown>> = staleRows.map((rowNumber) => ({
+    updateCells: {
+      range: {
+        sheetId: ids.Integrantes,
+        startRowIndex: rowNumber - 1,
+        endRowIndex: rowNumber,
+        startColumnIndex: 0,
+        endColumnIndex: MEMBER_HEADERS.length,
+      },
+      rows: [{ values: MEMBER_HEADERS.map(() => cellData("")) }],
+      fields: "userEnteredValue",
+    },
+  }));
+
+  requests.push({
+    appendCells: {
+      sheetId: ids.LOG,
+      rows: [logRow(actor, "RECONCILIACION_BAJAS", "", "", "Integrantes", "", `${staleRows.length} fila(s) archivada(s) removida(s) del padrón activo - ${now}`)],
+      fields: "userEnteredValue",
+    },
+  });
+
+  await writeRequests(requests);
+  return staleRows.length;
+}
+
 export async function deactivateMembers(
   rowNumbers: number[],
   reason: string,
@@ -1067,13 +1138,16 @@ export async function deactivateMembers(
     const account = state.accounts.find((item) => item.email === memberEmail);
 
     requests.push({
-      deleteDimension: {
+      updateCells: {
         range: {
           sheetId: ids.Integrantes,
-          dimension: "ROWS",
-          startIndex: member.rowNumber - 1,
-          endIndex: member.rowNumber,
+          startRowIndex: member.rowNumber - 1,
+          endRowIndex: member.rowNumber,
+          startColumnIndex: 0,
+          endColumnIndex: MEMBER_HEADERS.length,
         },
+        rows: [{ values: MEMBER_HEADERS.map(() => cellData("")) }],
+        fields: "userEnteredValue",
       },
     });
 
@@ -2746,10 +2820,12 @@ export async function syncApprovedNewMemberRequests(actor: { email: string; role
   const requests = await readNewMemberRequests();
   let synced = 0;
   for (const request of requests) {
-    if (request.status !== "approved" || request.memberRowNumber) continue;
+    if (request.status !== "approved") continue;
     const member = await ensureApprovedRequestInRoster(request, actor);
-    await updateNewMemberRequest(request, { memberRowNumber: member.rowNumber });
-    synced += 1;
+    if (request.memberRowNumber !== member.rowNumber) {
+      await updateNewMemberRequest(request, { memberRowNumber: member.rowNumber });
+      synced += 1;
+    }
   }
   return synced;
 }

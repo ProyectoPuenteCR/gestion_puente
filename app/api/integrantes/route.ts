@@ -5,6 +5,8 @@ import {
   MEMBER_EMAIL_HEADER,
   MEMBER_HEADERS,
   readManagementSnapshot,
+  reconcileHistoricalMembersFromRoster,
+  syncApprovedNewMemberRequests,
   updateMember,
 } from "@/lib/google-sheets";
 import type { MemberFieldValue } from "@/lib/portal-types";
@@ -24,6 +26,10 @@ function recordFrom(value: unknown) {
 export async function GET() {
   try {
     const access = await currentPortalAccess();
+    if (access.role === "admin") {
+      await syncApprovedNewMemberRequests(access);
+      await reconcileHistoricalMembersFromRoster(access);
+    }
     const snapshot = await readManagementSnapshot();
     const rows = access.role === "admin"
       ? snapshot.members
