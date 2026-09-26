@@ -351,7 +351,7 @@ function MemberDialog({
   );
 }
 
-type MemberViewFilter = "all" | "active" | "with-email" | "no-email" | "minor" | "conduct" | "blocked";
+type MemberViewFilter = "all" | "active" | "with-email" | "no-email" | "minor" | "conduct" | "conduct-ok" | "blocked";
 type MemberViewMode = "quick" | "complete";
 type MemberDetailTab = "summary" | "all" | "history";
 type MemberNavigateTarget = "desempenos" | "asistencia" | "cuota";
@@ -570,6 +570,7 @@ export function IntegrantesManager({
       if (filter === "no-email") matchesFilter = !email;
       if (filter === "minor") matchesFilter = row.age !== null && row.age < 18;
       if (filter === "conduct") matchesFilter = conductState(row) !== "accepted";
+      if (filter === "conduct-ok") matchesFilter = conductState(row) === "accepted";
       if (filter === "blocked") matchesFilter = isBlocked(row);
       return matchesSearch && matchesName && matchesTurn && matchesYear && matchesFilter;
     });
@@ -845,6 +846,7 @@ export function IntegrantesManager({
             <button className={filter === "no-email" ? "active" : ""} onClick={() => setFilter("no-email")}>Sin email ({stats.withoutEmail})</button>
             <button className={filter === "minor" ? "active" : ""} onClick={() => setFilter("minor")}>Menores ({stats.minors})</button>
             <button className={filter === "conduct" ? "active warning" : "warning"} onClick={() => setFilter("conduct")}><ShieldAlert /> Código pendiente ({stats.conductPending})</button>
+            <button className={filter === "conduct-ok" ? "active" : ""} onClick={() => setFilter("conduct-ok")}><CheckCircle2 /> Código aceptado ({stats.total - stats.conductPending})</button>
             <button className={filter === "blocked" ? "active danger" : "danger"} onClick={() => setFilter("blocked")}><Ban /> Bloqueados ({stats.blocked})</button>
             {(filter !== "all" || turnFilter !== "all" || entryYearFilter !== "all" || search) ? <button className="clear" onClick={clearFilters}>Limpiar filtros</button> : null}
           </div>
@@ -898,10 +900,37 @@ export function IntegrantesManager({
                           </td>
                           <td><div className="member-person-cell">{photo ? <img src={photo} alt="" /> : <span>{memberInitials(name)}</span>}<div><strong>{name || "Sin nombre"}</strong><small>{email || String(row.values[PERSONAL_EMAIL] ?? "") || "Sin email"}</small></div></div></td>
                           <td>{String(row.values[DNI] ?? "") || "—"}</td>
-                          <td><span className={`member-turn member-turn-${normalized(memberTurn(String(row.values[SCHEDULE] ?? "")))}`}>{memberTurn(String(row.values[SCHEDULE] ?? ""))}</span></td>
+                          <td>
+                            <button
+                              type="button"
+                              className={`member-turn member-turn-${normalized(memberTurn(String(row.values[SCHEDULE] ?? "")))} member-tag-filter`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setTurnFilter(memberTurn(String(row.values[SCHEDULE] ?? "")));
+                              }}
+                              title="Filtrar por este turno"
+                            >
+                              {memberTurn(String(row.values[SCHEDULE] ?? ""))}
+                            </button>
+                          </td>
                           <td>{String(row.values[PHONE] ?? "") || "—"}</td>
                           <td className="member-email-cell">{email || "—"}</td>
-                          <td><div className="member-status-stack">{blocked ? <span className="member-status blocked">Bloqueado</span> : email ? <span className="member-status active">Activo</span> : <span className="member-status no-email">Sin email</span>}{code === "accepted" ? <span className="member-status code">Código {new Date().getFullYear()} ✓</span> : <span className="member-status code-pending">{code === "outdated" ? "Código desactualizado" : "Código pendiente"}</span>}</div></td>
+                          <td>
+                            <div className="member-status-stack">
+                              {blocked ? (
+                                <button type="button" className="member-status blocked member-tag-filter" onClick={(event) => { event.stopPropagation(); setFilter("blocked"); }}>Bloqueado</button>
+                              ) : email ? (
+                                <button type="button" className="member-status active member-tag-filter" onClick={(event) => { event.stopPropagation(); setFilter("active"); }}>Activo</button>
+                              ) : (
+                                <button type="button" className="member-status no-email member-tag-filter" onClick={(event) => { event.stopPropagation(); setFilter("no-email"); }}>Sin email</button>
+                              )}
+                              {code === "accepted" ? (
+                                <button type="button" className="member-status code member-tag-filter" onClick={(event) => { event.stopPropagation(); setFilter("conduct-ok"); }}>Código {new Date().getFullYear()} ✓</button>
+                              ) : (
+                                <button type="button" className="member-status code-pending member-tag-filter" onClick={(event) => { event.stopPropagation(); setFilter("conduct"); }}>{code === "outdated" ? "Código desactualizado" : "Código pendiente"}</button>
+                              )}
+                            </div>
+                          </td>
                           <td>{String(row.values[ADDRESS] ?? "") || "—"}</td>
                           <td><Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); setSelected(row.rowNumber); }} aria-label={`Acciones de ${name}`}><MoreHorizontal /></Button></td>
                         </tr>
