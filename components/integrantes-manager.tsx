@@ -1,7 +1,46 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Columns3, Download, FileDown, ImagePlus, Link2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Search, Upload, UserMinus, X } from "lucide-react";
+import {
+  AtSign,
+  Baby,
+  Ban,
+  BarChart3,
+  BriefcaseBusiness,
+  CalendarCheck,
+  CalendarDays,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  CircleDollarSign,
+  ClipboardList,
+  Columns3,
+  Download,
+  FileDown,
+  ImagePlus,
+  LayoutGrid,
+  Link2,
+  ListFilter,
+  LoaderCircle,
+  Mail,
+  MapPin,
+  MoreHorizontal,
+  Pencil,
+  Phone,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  ShieldAlert,
+  TableProperties,
+  Upload,
+  UserMinus,
+  UserRound,
+  UserRoundCheck,
+  UsersRound,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -312,7 +351,66 @@ function MemberDialog({
   );
 }
 
-export function IntegrantesManager({ data }: { data: PortalData }) {
+type MemberViewFilter = "all" | "active" | "no-email" | "minor" | "conduct" | "blocked";
+type MemberViewMode = "quick" | "complete";
+type MemberDetailTab = "summary" | "all" | "history";
+type MemberNavigateTarget = "desempenos" | "asistencia" | "cuota";
+type ConductUserState = "accepted" | "outdated" | "pending";
+
+const PERSONAL_EMAIL = "Dirección de correo electrónico";
+const ADDRESS = "Dirección Actual donde vivo";
+const PHONE = "CELULAR";
+const DNI = "DNI";
+const RESPONSIBLE = "Nombre de padre madre o responsable";
+const EMERGENCY = "En caso de emergencia avisar a ( indicar nombre y celular)";
+
+function memberInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "PP";
+}
+
+function memberTurn(value: string) {
+  const text = normalized(value);
+  if (text.includes("2 turnos") || text.includes("ambos")) return "Ambos";
+  if (text.includes("10") || text.includes("manana")) return "Mañana";
+  if (text.includes("15") || text.includes("tarde")) return "Tarde";
+  return value || "Sin turno";
+}
+
+function memberPhotoUrl(value: MemberFieldValue | undefined) {
+  const photo = String(value ?? "").trim();
+  if (!photo) return "";
+  return photo.startsWith("http") ? `/api/fotos/externa?url=${encodeURIComponent(photo)}` : `/api/fotos/${encodeURIComponent(photo)}`;
+}
+
+function formatMemberDate(value: MemberFieldValue | undefined) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const date = new Date(`${raw}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return raw;
+  return new Intl.DateTimeFormat("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+}
+
+function DetailValue({ icon: Icon, label, value }: { icon: typeof UserRound; label: string; value: string }) {
+  return (
+    <div className="member-detail-value">
+      <Icon />
+      <span><small>{label}</small><strong>{value || "—"}</strong></span>
+    </div>
+  );
+}
+
+export function IntegrantesManager({
+  data,
+  onNavigate,
+}: {
+  data: PortalData;
+  onNavigate?: (view: MemberNavigateTarget) => void;
+}) {
   const [payload, setPayload] = useState<MemberManagementPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -328,6 +426,15 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
   const [reason, setReason] = useState("");
   const [savingBaja, setSavingBaja] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [viewMode, setViewMode] = useState<MemberViewMode>("quick");
+  const [filter, setFilter] = useState<MemberViewFilter>("all");
+  const [turnFilter, setTurnFilter] = useState("all");
+  const [entryYearFilter, setEntryYearFilter] = useState("all");
+  const [detailTab, setDetailTab] = useState<MemberDetailTab>("summary");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [pendingNewCount, setPendingNewCount] = useState(0);
+  const [conductByEmail, setConductByEmail] = useState<Record<string, ConductUserState>>({});
   const importInput = useRef<HTMLInputElement>(null);
 
   const acceptPayload = useCallback((next: MemberManagementPayload) => {
@@ -336,10 +443,11 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
       if (current.length) return current.filter((header) => next.headers.includes(header));
       const stored = window.localStorage.getItem("puente-visible-columns");
       if (stored) {
-        try { return (JSON.parse(stored) as string[]).filter((header) => next.headers.includes(header)); } catch { /* use defaults */ }
+        try { return (JSON.parse(stored) as string[]).filter((header) => next.headers.includes(header)); } catch {}
       }
       return [...next.headers];
     });
+    setSelected((current) => current ?? next.rows[0]?.rowNumber ?? null);
   }, []);
 
   const fetchPayload = useCallback(async () => {
@@ -369,9 +477,28 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [acceptPayload, fetchPayload]);
+
+  useEffect(() => {
+    if (!payload?.canManage) return;
+    let active = true;
+    const year = new Date().getFullYear();
+    void fetch(`/api/codigo-convivencia?year=${year}`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as {
+          admin?: { users?: Array<{ email: string; status: ConductUserState }> };
+        } | null;
+        if (!response.ok || !active) return;
+        const map = Object.fromEntries((body?.admin?.users ?? []).map((item) => [item.email.trim().toLowerCase(), item.status]));
+        setConductByEmail(map);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [payload?.canManage]);
+
   useEffect(() => {
     if (visible.length) window.localStorage.setItem("puente-visible-columns", JSON.stringify(visible));
   }, [visible]);
+
   useEffect(() => {
     const stored = window.localStorage.getItem("puente-column-widths");
     if (stored) {
@@ -379,23 +506,76 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
         const parsed = JSON.parse(stored) as Record<string, number>;
         const frame = window.requestAnimationFrame(() => setWidths(parsed));
         return () => window.cancelAnimationFrame(frame);
-      } catch { /* use defaults */ }
+      } catch {}
     }
   }, []);
+
   useEffect(() => {
     if (Object.keys(widths).length) window.localStorage.setItem("puente-column-widths", JSON.stringify(widths));
   }, [widths]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [search, nameFilter, filter, turnFilter, entryYearFilter, pageSize]);
+
+  const accountByEmail = useMemo(
+    () => new Map((payload?.accounts ?? []).map((account) => [account.email.trim().toLowerCase(), account])),
+    [payload?.accounts],
+  );
+
+  const isBlocked = useCallback((row: MemberRecord) => {
+    const email = String(row.values[EMAIL] ?? "").trim().toLowerCase();
+    return email ? accountByEmail.get(email)?.active === false : false;
+  }, [accountByEmail]);
+
+  const conductState = useCallback((row: MemberRecord): ConductUserState => {
+    const email = String(row.values[EMAIL] ?? "").trim().toLowerCase();
+    if (!email) return "pending";
+    return conductByEmail[email] ?? "pending";
+  }, [conductByEmail]);
+
+  const allRows = payload?.rows ?? [];
+  const stats = useMemo(() => ({
+    total: allRows.length,
+    withEmail: allRows.filter((row) => String(row.values[EMAIL] ?? "").trim()).length,
+    withoutEmail: allRows.filter((row) => !String(row.values[EMAIL] ?? "").trim()).length,
+    minors: allRows.filter((row) => row.age !== null && row.age < 18).length,
+    blocked: allRows.filter(isBlocked).length,
+    conductPending: allRows.filter((row) => conductState(row) !== "accepted").length,
+  }), [allRows, conductState, isBlocked]);
+
+  const entryYears = useMemo(
+    () => [...new Set(allRows.map((row) => String(row.values[ENTRY_YEAR] ?? "").trim()).filter(Boolean))].sort((a, b) => b.localeCompare(a)),
+    [allRows],
+  );
+  const turnOptions = useMemo(
+    () => [...new Set(allRows.map((row) => memberTurn(String(row.values[SCHEDULE] ?? ""))).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es")),
+    [allRows],
+  );
+
   const rows = useMemo(() => {
     const term = normalized(search.trim());
     const nameTerm = normalized(nameFilter.trim());
-    if (!payload) return [];
-    return payload.rows.filter((row) => {
-      const matchesAll = !term || normalized(Object.values(row.values).join(" ")).includes(term);
+    return allRows.filter((row) => {
+      const email = String(row.values[EMAIL] ?? "").trim();
+      const matchesSearch = !term || normalized(Object.values(row.values).join(" ")).includes(term);
       const matchesName = !nameTerm || normalized(row.values[NAME]).includes(nameTerm);
-      return matchesAll && matchesName;
+      const matchesTurn = turnFilter === "all" || memberTurn(String(row.values[SCHEDULE] ?? "")) === turnFilter;
+      const matchesYear = entryYearFilter === "all" || String(row.values[ENTRY_YEAR] ?? "").trim() === entryYearFilter;
+      let matchesFilter = true;
+      if (filter === "active") matchesFilter = !isBlocked(row);
+      if (filter === "no-email") matchesFilter = !email;
+      if (filter === "minor") matchesFilter = row.age !== null && row.age < 18;
+      if (filter === "conduct") matchesFilter = conductState(row) !== "accepted";
+      if (filter === "blocked") matchesFilter = isBlocked(row);
+      return matchesSearch && matchesName && matchesTurn && matchesYear && matchesFilter;
     });
-  }, [payload, search, nameFilter]);
+  }, [allRows, search, nameFilter, turnFilter, entryYearFilter, filter, conductState, isBlocked]);
+
+  const maxPage = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, maxPage);
+  const pagedRows = rows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
   const visibleHeaders = useMemo(
     () => (payload?.headers ?? []).filter((header) => visible.includes(header)),
     [payload, visible],
@@ -496,82 +676,287 @@ export function IntegrantesManager({ data }: { data: PortalData }) {
     }
   }
 
+  function clearFilters() {
+    setSearch("");
+    setNameFilter("");
+    setFilter("all");
+    setTurnFilter("all");
+    setEntryYearFilter("all");
+  }
+
   if (loading && !payload) return <section className="surface manager-loading"><LoaderCircle className="spin" /><span>Cargando integrantes…</span></section>;
   if (!payload) return <section className="surface manager-error"><p>{error || "No se pudo abrir el padrón."}</p><Button onClick={() => void load()}><RefreshCw /> Reintentar</Button></section>;
 
+  const selectedName = String(selectedMember?.values[NAME] ?? "");
+  const selectedEmail = String(selectedMember?.values[EMAIL] ?? "");
+  const selectedSchedule = String(selectedMember?.values[SCHEDULE] ?? "");
+  const selectedPhoto = memberPhotoUrl(selectedMember?.values[PHOTO]);
+  const selectedConduct = selectedMember ? conductState(selectedMember) : "pending";
+  const selectedBlocked = selectedMember ? isBlocked(selectedMember) : false;
+  const selectedCodeLabel = selectedConduct === "accepted"
+    ? `Código ${new Date().getFullYear()} ✓`
+    : selectedConduct === "outdated"
+      ? "Código desactualizado"
+      : "Código pendiente";
+
   return (
-    <div className="page-stack member-manager">
-      <section className="surface manager-toolbar">
-        <div>
+    <div className="page-stack member-manager member-manager-v2">
+      <section className="surface member-hero">
+        <div className="member-hero-copy">
           <p className="eyebrow">PADRÓN EN VIVO</p>
           <h2>{payload.canManage ? "Administración de integrantes" : "Mi ficha de integrante"}</h2>
-          <p>{payload.canManage ? `${payload.rows.length} integrantes · ${payload.headers.length} columnas de Google Sheets.` : payload.canEdit ? "Podés consultar y actualizar únicamente tus propios datos." : "Tu ficha está en modo sólo lectura. El administrador debe habilitar la edición."}</p>
+          <p>{payload.canManage ? `Gestioná los integrantes de Proyecto Puente. ${payload.rows.length} integrantes · ${payload.headers.length} columnas en Google Sheets.` : "Consultá y actualizá tus datos personales habilitados."}</p>
         </div>
-        <div className="manager-actions">
+        <div className="member-hero-actions">
           {payload.canManage ? <Button className="add-member-button" onClick={() => openEdit(null)}><Plus /> Agregar integrante</Button> : null}
-          {payload.canManage ? <NewMembersManager onMemberIncorporated={() => { setNotice("El nuevo integrante fue incorporado al padrón."); void load(); }} /> : null}
-          <Button variant="outline" disabled={!selectedMember || !payload.canEdit} onClick={() => openEdit(selectedMember)}><Pencil /> Modificar</Button>
-          {payload.canManage ? <Button variant="destructive" disabled={!selectedMember} onClick={() => setBajaOpen(true)}><UserMinus /> Baja</Button> : null}
-          <Button variant="outline" onClick={() => void exportExcel()}><Download /> Exportar Excel</Button>
-          {payload.canManage ? <><Button variant="outline" disabled={importing} onClick={() => importInput.current?.click()}>{importing ? <LoaderCircle className="spin" /> : <Upload />} Importar Excel</Button><input ref={importInput} className="sr-only" type="file" accept=".xlsx,.xls" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /></> : null}
+          {payload.canManage ? (
+            <NewMembersManager
+              onPendingCount={setPendingNewCount}
+              onMemberIncorporated={() => { setNotice("El nuevo integrante fue incorporado al padrón."); void load(); }}
+            />
+          ) : null}
+        </div>
+      </section>
+
+      {payload.canManage ? (
+        <section className="member-kpis" aria-label="Resumen del padrón">
+          <button type="button" className="member-kpi" onClick={() => setFilter("all")}><span className="member-kpi-icon tone-blue"><UsersRound /></span><strong>{stats.total}</strong><small>Integrantes totales</small></button>
+          <button type="button" className="member-kpi" onClick={() => { setFilter("active"); setSearch(""); }}><span className="member-kpi-icon tone-green"><CheckCircle2 /></span><strong>{stats.withEmail}</strong><small>Con email Puente</small></button>
+          <button type="button" className="member-kpi" onClick={() => setFilter("no-email")}><span className="member-kpi-icon tone-amber"><Mail /></span><strong>{stats.withoutEmail}</strong><small>Sin email</small></button>
+          <button type="button" className="member-kpi" onClick={() => setFilter("minor")}><span className="member-kpi-icon tone-purple"><Baby /></span><strong>{stats.minors}</strong><small>Menores</small></button>
+          <div className="member-kpi"><span className="member-kpi-icon tone-red"><ClipboardList /></span><strong>{pendingNewCount}</strong><small>Solicitudes nuevas</small></div>
+        </section>
+      ) : null}
+
+      <section className="surface member-browser">
+        <div className="member-browser-toolbar">
+          <label className="member-global-search"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por nombre, DNI, email, teléfono, dirección..." /></label>
+
+          <details className="member-filter-menu">
+            <summary><ListFilter /> Filtros <ChevronRight /></summary>
+            <div>
+              <label><span>Turno</span><select value={turnFilter} onChange={(event) => setTurnFilter(event.target.value)}><option value="all">Todos</option>{turnOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <label><span>Año de ingreso</span><select value={entryYearFilter} onChange={(event) => setEntryYearFilter(event.target.value)}><option value="all">Todos</option>{entryYears.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <Button type="button" variant="outline" onClick={clearFilters}>Limpiar filtros</Button>
+            </div>
+          </details>
+
+          <div className="member-view-switch">
+            <Button type="button" variant={viewMode === "quick" ? "default" : "outline"} onClick={() => setViewMode("quick")}><LayoutGrid /> Vista rápida</Button>
+            <Button type="button" variant={viewMode === "complete" ? "default" : "outline"} onClick={() => setViewMode("complete")}><TableProperties /> Vista completa</Button>
+          </div>
+
           <details className="column-picker">
-            <summary><Columns3 /> Mostrar / ocultar columnas <Badge>{visible.length}/{payload.headers.length}</Badge></summary>
+            <summary><Columns3 /> Columnas <Badge>{visible.length}/{payload.headers.length}</Badge></summary>
             <div>
               <header>
                 <strong>Columnas visibles</strong>
                 <span>
-                  <button type="button" onClick={() => setVisible([...payload.headers])}>Mostrar todas</button>
-                  <button type="button" onClick={() => setVisible([])}>Ocultar todas</button>
-                  <button type="button" onClick={() => { setWidths({}); window.localStorage.removeItem("puente-column-widths"); }}><RotateCcw /> Restablecer anchos</button>
+                  <button type="button" onClick={() => setVisible([...payload.headers])}>Todas</button>
+                  <button type="button" onClick={() => setVisible([])}>Ninguna</button>
+                  <button type="button" onClick={() => { setWidths({}); window.localStorage.removeItem("puente-column-widths"); }}><RotateCcw /> Anchos</button>
                 </span>
               </header>
+              <p className="member-column-note">Estas opciones se aplican a la Vista completa.</p>
               {payload.headers.map((header) => (
                 <label key={header}><Checkbox checked={visible.includes(header)} onCheckedChange={(checked) => setVisible((current) => checked === true ? [...current, header] : current.filter((item) => item !== header))} /><span>{header}</span></label>
               ))}
             </div>
           </details>
-          <label className="manager-search"><Search /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar en todas las columnas…" /></label>
+
+          <details className="member-more-menu">
+            <summary><MoreHorizontal /> Más</summary>
+            <div>
+              <button type="button" onClick={() => void exportExcel()}><Download /> Exportar Excel</button>
+              {payload.canManage ? <button type="button" disabled={importing} onClick={() => importInput.current?.click()}>{importing ? <LoaderCircle className="spin" /> : <Upload />} Importar Excel</button> : null}
+              <button type="button" disabled={!selectedMember || !payload.canEdit} onClick={() => openEdit(selectedMember)}><Pencil /> Modificar seleccionado</button>
+            </div>
+          </details>
+          {payload.canManage ? <input ref={importInput} className="sr-only" type="file" accept=".xlsx,.xls" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /> : null}
           <Button variant="outline" size="icon" onClick={() => void load()} aria-label="Actualizar grilla"><RefreshCw /></Button>
         </div>
-      </section>
 
-      {notice ? <div className="manager-notice"><Check /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Cerrar"><X /></button></div> : null}
-      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+        {payload.canManage ? (
+          <div className="member-filter-chips">
+            <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>Todos ({stats.total})</button>
+            <button className={filter === "active" ? "active" : ""} onClick={() => setFilter("active")}>Activos ({stats.total - stats.blocked})</button>
+            <button className={filter === "no-email" ? "active" : ""} onClick={() => setFilter("no-email")}>Sin email ({stats.withoutEmail})</button>
+            <button className={filter === "minor" ? "active" : ""} onClick={() => setFilter("minor")}>Menores ({stats.minors})</button>
+            <button className={filter === "conduct" ? "active warning" : "warning"} onClick={() => setFilter("conduct")}><ShieldAlert /> Código pendiente ({stats.conductPending})</button>
+            <button className={filter === "blocked" ? "active danger" : "danger"} onClick={() => setFilter("blocked")}><Ban /> Bloqueados ({stats.blocked})</button>
+            {(filter !== "all" || turnFilter !== "all" || entryYearFilter !== "all" || search) ? <button className="clear" onClick={clearFilters}>Limpiar filtros</button> : null}
+          </div>
+        ) : null}
 
-      <section className="surface sheet-grid-wrap">
-        <div className="sheet-grid-scroll">
-          <table className="sheet-grid">
-            <colgroup>
-              <col style={{ width: 54 }} />
-              {visibleHeaders.map((header) => <col key={header} style={{ width: widths[header] ?? columnWidth(header) }} />)}
-            </colgroup>
-            <thead>
-              <tr>
-                <th className="select-column"><span className="sheet-column-letter">#</span><span>Seleccionar</span></th>
-                {visibleHeaders.map((header) => (
-                  <th key={header}>
-                    <span className="sheet-column-letter">{columnLetter(payload.headers.indexOf(header))}</span>
-                    <span>{header}</span>
-                    {header === NAME ? <label className="sheet-name-filter" onClick={(event) => event.stopPropagation()}><Search /><input list="member-name-options" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} placeholder="Buscar nombre…" /><datalist id="member-name-options">{payload.rows.map((row) => <option key={row.id} value={String(row.values[NAME] ?? "")} />)}</datalist>{nameFilter ? <button type="button" onClick={() => setNameFilter("")} aria-label="Limpiar nombre"><X /></button> : null}</label> : null}
-                    <span className="column-resizer" role="separator" aria-label={`Cambiar ancho de ${header}`} onPointerDown={(event) => startResize(header, event)} />
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className={selected === row.rowNumber ? "selected" : ""} onClick={() => setSelected(row.rowNumber)} onDoubleClick={() => { if (payload.canEdit) openEdit(row); }}>
-                  <td className="select-column"><input type="radio" name="selected-member" checked={selected === row.rowNumber} onChange={() => setSelected(row.rowNumber)} aria-label={`Seleccionar ${String(row.values[NAME] ?? "integrante")}`} /></td>
-                  {visibleHeaders.map((header) => (
-                    <td key={header} title={String(row.values[header] ?? "")}>{header === AGE ? `${row.age ?? "—"} · ${row.ageStatus}` : String(row.values[header] ?? "") || "—"}</td>
+        {notice ? <div className="manager-notice"><Check /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Cerrar"><X /></button></div> : null}
+        {error ? <p className="inline-error" role="alert">{error}</p> : null}
+
+        {viewMode === "quick" ? (
+          <div className={`member-quick-layout ${selectedMember ? "has-detail" : ""}`}>
+            <div className="member-quick-main">
+              <div className="member-quick-table-wrap">
+                <table className="member-quick-table">
+                  <thead>
+                    <tr>
+                      <th className="check-cell"></th>
+                      <th>Integrante</th>
+                      <th>DNI</th>
+                      <th>Turno</th>
+                      <th>Celular</th>
+                      <th>Email Puente</th>
+                      <th>Estado</th>
+                      <th>Dirección</th>
+                      <th>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedRows.map((row) => {
+                      const name = String(row.values[NAME] ?? "");
+                      const email = String(row.values[EMAIL] ?? "");
+                      const photo = memberPhotoUrl(row.values[PHOTO]);
+                      const blocked = isBlocked(row);
+                      const code = conductState(row);
+                      return (
+                        <tr key={row.id} className={selected === row.rowNumber ? "selected" : ""} onClick={() => { setSelected(row.rowNumber); setDetailTab("summary"); }} onDoubleClick={() => openEdit(row)}>
+                          <td className="check-cell"><input type="checkbox" checked={selected === row.rowNumber} readOnly aria-label={`Seleccionar ${name}`} /></td>
+                          <td><div className="member-person-cell">{photo ? <img src={photo} alt="" /> : <span>{memberInitials(name)}</span>}<div><strong>{name || "Sin nombre"}</strong><small>{email || String(row.values[PERSONAL_EMAIL] ?? "") || "Sin email"}</small></div></div></td>
+                          <td>{String(row.values[DNI] ?? "") || "—"}</td>
+                          <td><span className={`member-turn member-turn-${normalized(memberTurn(String(row.values[SCHEDULE] ?? "")))}`}>{memberTurn(String(row.values[SCHEDULE] ?? ""))}</span></td>
+                          <td>{String(row.values[PHONE] ?? "") || "—"}</td>
+                          <td className="member-email-cell">{email || "—"}</td>
+                          <td><div className="member-status-stack">{blocked ? <span className="member-status blocked">Bloqueado</span> : email ? <span className="member-status active">Activo</span> : <span className="member-status no-email">Sin email</span>}{code === "accepted" ? <span className="member-status code">Código {new Date().getFullYear()} ✓</span> : <span className="member-status code-pending">{code === "outdated" ? "Código desactualizado" : "Código pendiente"}</span>}</div></td>
+                          <td>{String(row.values[ADDRESS] ?? "") || "—"}</td>
+                          <td><Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); setSelected(row.rowNumber); }} aria-label={`Acciones de ${name}`}><MoreHorizontal /></Button></td>
+                        </tr>
+                      );
+                    })}
+                    {!pagedRows.length ? <tr><td colSpan={9} className="empty-cell">No hay integrantes para los filtros seleccionados.</td></tr> : null}
+                  </tbody>
+                </table>
+              </div>
+
+              <footer className="member-table-footer">
+                <strong>{rows.length} integrantes {selectedMember ? "· 1 seleccionado" : ""}</strong>
+                <div className="member-pagination">
+                  <Button variant="outline" size="icon" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft /></Button>
+                  {Array.from({ length: Math.min(5, maxPage) }, (_, index) => {
+                    const firstPage = Math.min(Math.max(1, currentPage - 2), Math.max(1, maxPage - 4));
+                    const pageNumber = firstPage + index;
+                    return pageNumber <= maxPage ? <button key={pageNumber} className={pageNumber === currentPage ? "active" : ""} onClick={() => setPage(pageNumber)}>{pageNumber}</button> : null;
+                  })}
+                  <Button variant="outline" size="icon" disabled={currentPage >= maxPage} onClick={() => setPage((value) => Math.min(maxPage, value + 1))}><ChevronRight /></Button>
+                </div>
+                <label className="member-page-size">Mostrar <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option></select> por página</label>
+              </footer>
+            </div>
+
+            {selectedMember ? (
+              <aside className="member-detail-panel">
+                <header className="member-detail-header">
+                  {selectedPhoto ? <img src={selectedPhoto} alt="" /> : <span className="member-detail-avatar">{memberInitials(selectedName)}</span>}
+                  <div>
+                    <div className="member-detail-title"><h3>{selectedName}</h3>{selectedBlocked ? <span className="member-status blocked">Bloqueado</span> : <span className="member-status active">Activo</span>}</div>
+                    <p>Matrícula: {String(selectedMember.values["Numero de Matricula"] ?? "—")}</p>
+                    <span className={selectedConduct === "accepted" ? "member-status code" : "member-status code-pending"}>{selectedCodeLabel}</span>
+                  </div>
+                  <button type="button" className="member-detail-close" onClick={() => setSelected(null)} aria-label="Cerrar detalle"><X /></button>
+                </header>
+
+                <nav className="member-detail-tabs">
+                  <button className={detailTab === "summary" ? "active" : ""} onClick={() => setDetailTab("summary")}><LayoutGrid /> Resumen</button>
+                  <button className={detailTab === "all" ? "active" : ""} onClick={() => setDetailTab("all")}><ClipboardList /> Datos completos</button>
+                  <button className={detailTab === "history" ? "active" : ""} onClick={() => setDetailTab("history")}><CalendarDays /> Historial</button>
+                </nav>
+
+                {detailTab === "summary" ? (
+                  <div className="member-detail-sections">
+                    <section>
+                      <header><h4><AtSign /> Contacto</h4><Button variant="outline" size="sm" onClick={() => openEdit(selectedMember)}><Pencil /> Editar</Button></header>
+                      <DetailValue icon={UserRound} label="DNI" value={String(selectedMember.values[DNI] ?? "")} />
+                      <DetailValue icon={Phone} label="Celular" value={String(selectedMember.values[PHONE] ?? "")} />
+                      <DetailValue icon={Mail} label="Email Puente" value={selectedEmail} />
+                      <DetailValue icon={AtSign} label="Email personal" value={String(selectedMember.values[PERSONAL_EMAIL] ?? "")} />
+                      <DetailValue icon={MapPin} label="Dirección" value={String(selectedMember.values[ADDRESS] ?? "")} />
+                    </section>
+
+                    <section>
+                      <header><h4><BriefcaseBusiness /> Información del proyecto</h4><Button variant="outline" size="sm" onClick={() => openEdit(selectedMember)}><Pencil /> Editar</Button></header>
+                      <DetailValue icon={CalendarCheck} label="Turno" value={memberTurn(selectedSchedule)} />
+                      <DetailValue icon={CalendarDays} label="Horario" value={selectedSchedule} />
+                      <DetailValue icon={ClipboardList} label="Año de ingreso" value={String(selectedMember.values[ENTRY_YEAR] ?? "")} />
+                      <DetailValue icon={BriefcaseBusiness} label="Tarea / Área" value={String(selectedMember.values[TASK] ?? "")} />
+                    </section>
+
+                    <section>
+                      <header><h4><UserRound /> Información personal</h4><Button variant="outline" size="sm" onClick={() => openEdit(selectedMember)}><Pencil /> Editar</Button></header>
+                      <DetailValue icon={CalendarDays} label="Fecha de nacimiento" value={`${formatMemberDate(selectedMember.values[BIRTHDAY])}${selectedMember.age !== null ? ` (${selectedMember.age} años)` : ""}`} />
+                      <DetailValue icon={Baby} label="Edad" value={selectedMember.age === null ? "—" : `${selectedMember.age} años`} />
+                      <DetailValue icon={UserRoundCheck} label="Responsable" value={String(selectedMember.values[RESPONSIBLE] ?? "")} />
+                      <DetailValue icon={Phone} label="Contacto de emergencia" value={String(selectedMember.values[EMERGENCY] ?? "")} />
+                    </section>
+
+                    <section className="member-detail-actions">
+                      <header><h4><BriefcaseBusiness /> Acciones</h4></header>
+                      <div>
+                        <Button variant="outline" onClick={() => openEdit(selectedMember)}><Pencil /> Modificar integrante</Button>
+                        <Button variant="outline" onClick={() => { setEditing(selectedMember); setEditorOpen(true); }}><FileDown /> Ver reporte completo</Button>
+                        <Button variant="outline" onClick={() => onNavigate?.("desempenos")}><BarChart3 /> Ver desempeño</Button>
+                        <Button variant="outline" onClick={() => onNavigate?.("asistencia")}><CalendarCheck /> Ver asistencias</Button>
+                        <Button variant="outline" onClick={() => onNavigate?.("cuota")}><CircleDollarSign /> Ver cuotas</Button>
+                        {payload.canManage ? <Button variant="destructive" onClick={() => setBajaOpen(true)}><UserMinus /> Dar de baja</Button> : null}
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+
+                {detailTab === "all" ? (
+                  <div className="member-all-fields">
+                    {payload.headers.map((header) => <div key={header}><small>{prettyHeader(header)}</small><strong>{header === AGE ? `${selectedMember.age ?? "—"} · ${selectedMember.ageStatus}` : String(selectedMember.values[header] ?? "") || "—"}</strong></div>)}
+                  </div>
+                ) : null}
+
+                {detailTab === "history" ? (
+                  <div className="member-history">
+                    <div><span><CalendarDays /></span><p><strong>Ingreso al Proyecto</strong><small>Año {String(selectedMember.values[ENTRY_YEAR] ?? "sin registrar")}</small></p></div>
+                    <div><span><ShieldAlert /></span><p><strong>Código de Convivencia</strong><small>{selectedCodeLabel}</small></p></div>
+                    <div><span><AtSign /></span><p><strong>Acceso a la plataforma</strong><small>{selectedBlocked ? "Bloqueado por administración" : selectedEmail ? "Habilitado mediante email institucional" : "Pendiente de email institucional"}</small></p></div>
+                    <p className="member-history-note">Los cambios administrativos detallados continúan registrándose en la hoja LOG.</p>
+                  </div>
+                ) : null}
+              </aside>
+            ) : null}
+          </div>
+        ) : (
+          <section className="sheet-grid-wrap member-complete-view">
+            <div className="sheet-grid-scroll">
+              <table className="sheet-grid">
+                <colgroup><col style={{ width: 54 }} />{visibleHeaders.map((header) => <col key={header} style={{ width: widths[header] ?? columnWidth(header) }} />)}</colgroup>
+                <thead>
+                  <tr>
+                    <th className="select-column"><span className="sheet-column-letter">#</span><span>Seleccionar</span></th>
+                    {visibleHeaders.map((header) => (
+                      <th key={header}>
+                        <span className="sheet-column-letter">{columnLetter(payload.headers.indexOf(header))}</span><span>{header}</span>
+                        {header === NAME ? <label className="sheet-name-filter" onClick={(event) => event.stopPropagation()}><Search /><input list="member-name-options" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} placeholder="Buscar nombre…" /><datalist id="member-name-options">{payload.rows.map((row) => <option key={row.id} value={String(row.values[NAME] ?? "")} />)}</datalist>{nameFilter ? <button type="button" onClick={() => setNameFilter("")} aria-label="Limpiar nombre"><X /></button> : null}</label> : null}
+                        <span className="column-resizer" role="separator" aria-label={`Cambiar ancho de ${header}`} onPointerDown={(event) => startResize(header, event)} />
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.id} className={selected === row.rowNumber ? "selected" : ""} onClick={() => setSelected(row.rowNumber)} onDoubleClick={() => { if (payload.canEdit) openEdit(row); }}>
+                      <td className="select-column"><input type="radio" name="selected-member" checked={selected === row.rowNumber} onChange={() => setSelected(row.rowNumber)} aria-label={`Seleccionar ${String(row.values[NAME] ?? "integrante")}`} /></td>
+                      {visibleHeaders.map((header) => <td key={header} title={String(row.values[header] ?? "")}>{header === AGE ? `${row.age ?? "—"} · ${row.ageStatus}` : String(row.values[header] ?? "") || "—"}</td>)}
+                    </tr>
                   ))}
-                </tr>
-              ))}
-              {!rows.length ? <tr><td colSpan={visibleHeaders.length + 1} className="empty-cell">No hay filas para mostrar.</td></tr> : null}
-            </tbody>
-          </table>
-        </div>
-        <footer><span>{rows.length} fila{rows.length === 1 ? "" : "s"} · {visibleHeaders.length} columnas visibles</span><small>Usá las barras inferior y lateral para recorrer la hoja. {payload.canEdit ? "Doble clic para editar." : "Edición deshabilitada por el administrador."}</small></footer>
+                  {!rows.length ? <tr><td colSpan={visibleHeaders.length + 1} className="empty-cell">No hay filas para mostrar.</td></tr> : null}
+                </tbody>
+              </table>
+            </div>
+            <footer><span>{rows.length} fila{rows.length === 1 ? "" : "s"} · {visibleHeaders.length} columnas visibles</span><small>Doble clic para editar. Usá las barras inferior y lateral para recorrer la hoja.</small></footer>
+          </section>
+        )}
       </section>
 
       {editorOpen ? <MemberDialog open payload={payload} member={editing} portalData={data} onOpenChange={setEditorOpen} onSaved={() => { setNotice("Los datos se guardaron correctamente en Google Sheets."); void load(); }} /> : null}
